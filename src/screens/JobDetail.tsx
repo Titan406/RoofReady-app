@@ -3,6 +3,7 @@ import { logEvent, supabase, type EstimateRow, type Job, type JobEvent } from '.
 import { MEASUREMENT_FIELDS, computeDrivers, normalizeMeasurements } from '../lib/estimate';
 import { SOURCES, STAGES, money, money0 } from '../lib/stages';
 import { go } from '../lib/nav';
+import JobDocuments from './JobDocuments';
 
 interface Form {
   name: string;
@@ -196,6 +197,8 @@ export default function JobDetail({ jobId }: { jobId: string }) {
           </div>
         );
       })()}
+
+      {!isNew && <JobDocuments jobId={jobId} />}
 
       <div className="card stack">
         <label>Stage

@@ -132,3 +132,4 @@ textarea.mono { font-family: ui-monospace, Menlo, monospace; font-size: 14px; li
   .printlogo { width: 220px; }
   .printbody { font-size: 11pt; }
 }
+.docrow { border-top: 1px solid #eee; padding-top: 10px; }

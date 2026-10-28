@@ -35,6 +35,7 @@ export default function Board({ email }: { email: string }) {
       <header className="topbar">
         <h1 className="brand"><img src="/logo-600.png" alt="Titan Roofing & Exteriors" className="headlogo" /></h1>
         <div className="row">
+          <button className="btn ghost small" onClick={() => go('/unmatched')}>Unmatched PDFs</button>
           <button className="btn ghost small" onClick={() => go('/templates')}>Templates</button>
           <button className="btn ghost small" onClick={() => supabase.auth.signOut()} title={email}>
             Sign out

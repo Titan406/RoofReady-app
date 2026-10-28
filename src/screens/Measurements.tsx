@@ -4,6 +4,7 @@ import { EMPTY_MEASUREMENTS, MEASUREMENT_FIELDS, REPORT_LENGTH_FIELDS, computeTo
 import { parseReport, sumHints, STEEP_PITCH_DEFAULT, type ParsedReport } from '../lib/reportParser';
 import { extractInBrowser, MIN_TEXT_CHARS } from '../lib/pdfText';
 import { go } from '../lib/nav';
+import { downloadAsFile, type JobDocument } from '../lib/documents';
 
 type Vals = Record<keyof M, string>;
 const ALL_FIELDS = [...MEASUREMENT_FIELDS, ...REPORT_LENGTH_FIELDS];
@@ -17,7 +18,7 @@ interface Review {
   source: string;
 }
 
-export default function Measurements({ jobId }: { jobId: string }) {
+export default function Measurements({ jobId, docId }: { jobId: string; docId?: string }) {
   const [job, setJob] = useState<Job | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [steepFrom, setSteepFrom] = useState(STEEP_PITCH_DEFAULT);
@@ -31,6 +32,27 @@ export default function Measurements({ jobId }: { jobId: string }) {
       else setJob(data as Job);
     });
   }, [jobId]);
+
+  // "Import measurements" from an attached document: fetch the private PDF in the browser and run the normal review flow.
+  useEffect(() => {
+    if (!docId) return;
+    let cancelled = false;
+    (async () => {
+      setBusy(true);
+      setErr('');
+      const { data, error } = await supabase.from('job_documents').select('*').eq('id', docId).eq('job_id', jobId).maybeSingle();
+      if (cancelled) return;
+      if (error || !data) { setBusy(false); setErr(error?.message || 'Document not found for this job.'); return; }
+      try {
+        const file = await downloadAsFile(data as JobDocument);
+        if (!cancelled) await onFile(file);
+      } catch (e) {
+        if (!cancelled) { setBusy(false); setErr((e as Error).message); }
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docId, jobId]);
 
   const saved = useMemo(() => (job?.measurements ?? {}) as Record<string, unknown>, [job]);
 

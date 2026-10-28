@@ -8,6 +8,7 @@ import Estimate from './screens/Estimate';
 import Orders from './screens/Orders';
 import Measurements from './screens/Measurements';
 import Templates from './screens/Templates';
+import Unmatched from './screens/Unmatched';
 
 function useHash() {
   const [hash, setHash] = useState(window.location.hash);
@@ -44,9 +45,10 @@ export default function App() {
   if (parts[0] === 'job' && parts[1]) {
     if (parts[2] === 'estimate') return <Estimate jobId={parts[1]} />;
     if (parts[2] === 'orders') return <Orders jobId={parts[1]} />;
-    if (parts[2] === 'measurements') return <Measurements jobId={parts[1]} />;
+    if (parts[2] === 'measurements') return <Measurements jobId={parts[1]} docId={parts[3]} />;
     return <JobDetail jobId={parts[1]} />;
   }
   if (parts[0] === 'templates') return <Templates />;
+  if (parts[0] === 'unmatched') return <Unmatched />;
   return <Board email={session.user.email ?? ''} />;
 }
