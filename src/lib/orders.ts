@@ -1,4 +1,4 @@
-import { MISSING_NOTE, PLACEHOLDER_TAG, missingBanner, type Line, REPORT_LENGTH_FIELDS, ROOF_TYPES, computeTotals, lineMissing, lineQty, lineTotal, roofTypeLabel, roofTypeOf, type EstimateData } from './estimate';
+import { gutterSummary, isGutterType, type Measurements, MISSING_NOTE, PLACEHOLDER_TAG, missingBanner, type Line, REPORT_LENGTH_FIELDS, ROOF_TYPES, computeTotals, lineMissing, lineQty, lineTotal, roofTypeLabel, roofTypeOf, type EstimateData } from './estimate';
 import { money } from './stages';
 import { companyLines, defaultTemplate, fillPlaceholders, formatDate, shortId, type FillValues, type OrderTemplate } from './templates';
 
@@ -40,6 +40,19 @@ function wrap(tpl: OrderTemplate, ctx: OrderContext, body: string[]): string {
   return out.join('\n');
 }
 
+const ft = (n: number, unit: string) => (Number.isNaN(n) ? 'MISSING' : `${fmtQty(n)} ${unit}`);
+function gutterLines(m: Measurements): string[] {
+  const g = gutterSummary(m);
+  const out = [
+    `- Gutter: ${ft(g.gutterFeet, 'ft')}${Number.isNaN(g.gutterSections) ? '' : ` (${g.gutterSections} × 10 ft sections)`}${m.gutterFeet === undefined && !Number.isNaN(g.gutterFeet) ? ' — from report eaves' : ''}`,
+    `- Downspouts: ${m.noDownspouts ? 'none' : ft(g.downspoutFeet, 'ft')}${Number.isNaN(g.downspoutPieces) || m.noDownspouts ? '' : ` (${g.downspoutPieces} × 10 ft pieces)`}`,
+    `- Inside corners ${m.insideCorners ?? 0} · Outside corners ${m.outsideCorners ?? 0} · Miters ${m.miters ?? 0}`,
+  ];
+  if (m.chainFeet) out.push(`- Rain chain: ${fmtQty(m.chainFeet)} ft`);
+  if (m.guardFeet) out.push(`- Gutter guard: ${fmtQty(m.guardFeet)} ft`);
+  return out;
+}
+
 const nm = (l: Line) => (l.placeholder ? `${l.name} (${PLACEHOLDER_TAG})` : l.name);
 const fmtQty = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2));
 
@@ -54,6 +67,10 @@ export function workOrderText(e: EstimateData, ctx: OrderContext, includePrices:
   if (rtNote) lines.push(`NOTE: ${rtNote}`);
   if (t.missingCount) lines.push(missingBanner(t.missingCount));
   lines.push('');
+  if (isGutterType(rt)) {
+    lines.push('GUTTERS');
+    lines.push(...gutterLines(m));
+  } else {
   lines.push('ROOF');
   lines.push(`- ${t.drivers.squares} squares (area ${m.area} sq ft + ${m.waste}% waste)`);
   lines.push(`- Steep pitch share: ${m.steepShare}% (${t.drivers.steepSquares} SQ)`);
@@ -65,6 +82,7 @@ export function workOrderText(e: EstimateData, ctx: OrderContext, includePrices:
   );
   if (rt !== 'asphalt_shingle')
     lines.push('- ' + REPORT_LENGTH_FIELDS.map((f) => `${f.label.replace(' (report)', '')} ${m[f.key] ?? 'MISSING'}${m[f.key] !== undefined ? ' LF' : ''}`).join(' · '));
+  }
   if (e.measurementSource) lines.push(`- Measurements from: ${e.measurementSource}`);
   lines.push('');
   lines.push('SCOPE OF WORK');
@@ -92,6 +110,7 @@ export function materialOrderText(e: EstimateData, ctx: OrderContext, includePri
   const lines: string[] = [];
   lines.push(`ROOF TYPE: ${roofTypeLabel(roofTypeOf(e))}`);
   if (t.missingCount) lines.push(missingBanner(t.missingCount));
+  if (isGutterType(roofTypeOf(e))) lines.push('', 'GUTTERS', ...gutterLines(e.measurements));
   lines.push('');
   lines.push('ITEMS');
   for (const l of e.materials) {

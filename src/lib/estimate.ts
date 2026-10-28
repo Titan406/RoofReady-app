@@ -19,6 +19,19 @@ export interface Measurements {
   rakes?: number; // rake LF
   /** User explicitly stated the roof has no valleys (valley 0 is then a real 0, not "missing"). */
   noValleys?: boolean;
+  // Gutter inputs (optional). undefined = not entered.
+  /** Gutter feet; when not entered it defaults to the report's eave length. 0 is flagged as missing. */
+  gutterFeet?: number;
+  downspoutFeet?: number;
+  /** User explicitly said: no downspouts on this job. */
+  noDownspouts?: boolean;
+  insideCorners?: number;
+  outsideCorners?: number;
+  /** Number of miters (e.g. two 3 ft miters = 2). */
+  miters?: number;
+  chainFeet?: number;
+  /** Leaf guard / screen feet — optional, only priced when entered. */
+  guardFeet?: number;
 }
 
 export type ReportLengthKey = 'ridges' | 'hips' | 'eaves' | 'rakes';
@@ -30,7 +43,18 @@ export const REPORT_LENGTH_FIELDS: { key: ReportLengthKey; label: string; unit: 
   { key: 'rakes', label: 'Rakes (report)', unit: 'LF' },
 ];
 
-export type NumericMeasurementKey = Exclude<keyof Measurements, 'noValleys' | ReportLengthKey>;
+export type GutterInputKey = 'gutterFeet' | 'downspoutFeet' | 'insideCorners' | 'outsideCorners' | 'miters' | 'chainFeet' | 'guardFeet';
+export const GUTTER_FIELDS: { key: GutterInputKey; label: string; unit: string }[] = [
+  { key: 'gutterFeet', label: 'Gutter', unit: 'ft' },
+  { key: 'downspoutFeet', label: 'Downspouts', unit: 'ft' },
+  { key: 'insideCorners', label: 'Inside corners', unit: 'count' },
+  { key: 'outsideCorners', label: 'Outside corners', unit: 'count' },
+  { key: 'miters', label: 'Miters', unit: 'count' },
+  { key: 'chainFeet', label: 'Rain chain', unit: 'ft' },
+  { key: 'guardFeet', label: 'Gutter guard / leaf screen', unit: 'ft' },
+];
+
+export type NumericMeasurementKey = Exclude<keyof Measurements, 'noValleys' | 'noDownspouts' | ReportLengthKey | GutterInputKey>;
 export const MEASUREMENT_FIELDS: { key: NumericMeasurementKey; label: string; unit: string }[] = [
   { key: 'area', label: 'Roof area', unit: 'sq ft' },
   { key: 'waste', label: 'Waste', unit: '%' },
@@ -75,7 +99,15 @@ export function normalizeMeasurements(raw: unknown): Measurements {
       if (Number.isFinite(n) && n >= 0) out[f.key] = n;
     }
   }
+  for (const f of GUTTER_FIELDS) {
+    const v = r[f.key];
+    if (v !== undefined && v !== null && v !== '') {
+      const n = Number(v);
+      if (Number.isFinite(n) && n >= 0) out[f.key] = n;
+    }
+  }
   if (r.noValleys === true) out.noValleys = true;
+  if (r.noDownspouts === true) out.noDownspouts = true;
   return out;
 }
 
@@ -105,6 +137,14 @@ export type DriverKey =
   | 'eavesPlusRakes'
   | 'valleyLF'
   | 'eavesValleySqft'
+  // gutter drivers (NaN = gutter / downspout feet missing -> flagged)
+  | 'gutterLF'
+  | 'downspoutLF'
+  | 'insideCorners'
+  | 'outsideCorners'
+  | 'miters'
+  | 'chainLF'
+  | 'guardLF'
   | 'none';
 
 export const DRIVER_LABELS: Record<DriverKey, string> = {
@@ -126,6 +166,13 @@ export const DRIVER_LABELS: Record<DriverKey, string> = {
   eavesPlusRakes: 'Eaves + rakes LF (report)',
   valleyLF: 'Valleys LF (report)',
   eavesValleySqft: '(Eaves + valleys) × strip width, sq ft',
+  gutterLF: 'Gutter ft (default = eaves)',
+  downspoutLF: 'Downspout ft',
+  insideCorners: 'Inside corners',
+  outsideCorners: 'Outside corners',
+  miters: 'Miters',
+  chainLF: 'Rain chain ft',
+  guardLF: 'Gutter guard ft',
   none: 'Fixed quantity',
 };
 
@@ -145,6 +192,7 @@ export function computeDrivers(m: Measurements): Drivers {
     valley: m.valley,
     dripEdge: m.dripEdge,
     ...lengthDrivers(m),
+    ...gutterDrivers(m),
     none: 0,
   };
 }
@@ -164,6 +212,24 @@ function lengthDrivers(m: Measurements) {
     eavesPlusRakes: sumOrNaN(m.eaves, m.rakes),
     valleyLF: valley,
     eavesValleySqft: Number.isNaN(valley) || !has(m.eaves) ? NaN : round2((m.eaves + valley) * m.leakBarrierWidth),
+  };
+}
+
+/** Gutter feet: entered value, else the report's eave length. Missing or 0 -> NaN (flagged, never guessed). */
+export function gutterFeetOf(m: Measurements): number {
+  const v = m.gutterFeet !== undefined ? m.gutterFeet : m.eaves;
+  return has(v) && v > 0 ? v : NaN;
+}
+function gutterDrivers(m: Measurements) {
+  const n = (v: number | undefined) => (has(v) ? v : 0);
+  return {
+    gutterLF: gutterFeetOf(m),
+    downspoutLF: m.noDownspouts ? 0 : has(m.downspoutFeet) ? m.downspoutFeet : NaN,
+    insideCorners: n(m.insideCorners),
+    outsideCorners: n(m.outsideCorners),
+    miters: n(m.miters),
+    chainLF: n(m.chainFeet),
+    guardLF: n(m.guardFeet),
   };
 }
 
@@ -303,14 +369,25 @@ export function newEstimateData(
 }
 
 // ---------------- Roof types ----------------
-export type RoofTypeId = 'asphalt_shingle' | 'tuff_rib' | 'snap_lock' | 'mech_lock' | 'brava';
+export type RoofTypeId = 'asphalt_shingle' | 'tuff_rib' | 'snap_lock' | 'mech_lock' | 'brava' | 'gutter_5in' | 'gutter_6in';
 export const ROOF_TYPES: { id: RoofTypeId; label: string; note?: string }[] = [
   { id: 'asphalt_shingle', label: 'Asphalt shingles' },
   { id: 'tuff_rib', label: '3-ft Tuff Rib (exposed-fastener metal)' },
   { id: 'snap_lock', label: 'Snap-Lock standing seam (metal)' },
   { id: 'mech_lock', label: 'Mechanical-lock standing seam (metal)', note: 'Mechanical-lock seams must be closed with a mechanical seamer (rent or own) after panels are installed.' },
   { id: 'brava', label: 'Brava synthetic shake' },
+  { id: 'gutter_5in', label: '5 inch gutter' },
+  { id: 'gutter_6in', label: '6 inch gutter' },
 ];
+export type GutterTypeId = 'gutter_5in' | 'gutter_6in';
+export const isGutterType = (t: RoofTypeId | undefined): t is GutterTypeId => t === 'gutter_5in' || t === 'gutter_6in';
+/** Estimate types the live DB check constraint accepts until the gutter migration is applied. */
+export const DB_PENDING_TYPES: RoofTypeId[] = ['gutter_5in', 'gutter_6in'];
+/** True when Postgres refused the save because estimates.roof_type is not in the (old) allowed list. */
+export const isRoofTypeCheckError = (e: { code?: string; message?: string } | null | undefined) =>
+  !!e && (e.code === '23514' || /check constraint/i.test(e.message ?? '')) && /estimates_roof_type_check/.test(e.message ?? '');
+export const GUTTER_DB_PENDING_MSG =
+  'Gutter estimates need a database update that has not been applied yet (pending migration). You can build and review this gutter estimate, but it cannot be saved until the database change is applied. Nothing was saved.';
 export const roofTypeOf = (e: Pick<EstimateData, 'roofType'>): RoofTypeId => e.roofType ?? 'asphalt_shingle';
 export const roofTypeLabel = (id: RoofTypeId | undefined) => ROOF_TYPES.find((t) => t.id === (id ?? 'asphalt_shingle'))?.label ?? 'Asphalt shingles';
 /** price_catalog row id holding team defaults for a roof type (shingles keep the original 'default' row). */
@@ -386,6 +463,56 @@ function bravaMaterials(): Line[] {
   ];
 }
 
+/** Gutter summary: feet plus 10 ft section / piece counts (for orders and the screen). */
+export function gutterSummary(m: Measurements) {
+  const g = gutterFeetOf(m);
+  const ds = m.noDownspouts ? 0 : has(m.downspoutFeet) ? m.downspoutFeet : NaN;
+  return {
+    gutterFeet: g,
+    gutterSections: Number.isNaN(g) ? NaN : ceilSafe(g / 10),
+    downspoutFeet: ds,
+    downspoutPieces: Number.isNaN(ds) ? NaN : ceilSafe(ds / 10),
+  };
+}
+
+// All gutter prices are PLACEHOLDERS (6 in slightly higher than 5 in). Every rate is an editable ASSUMPTION.
+function gutterMaterials(t: GutterTypeId): Line[] {
+  const six = t === 'gutter_6in';
+  const sz = six ? '6 in' : '5 in';
+  const ds = six ? '3x4 in' : '2x3 in';
+  const p = (five: number, sixP: number) => (six ? sixP : five);
+  return [
+    mk(`${sz} K-style gutter (10 ft section)`, 'section', 'gutterLF', 'coverage', 10, p(32, 39), 'ASSUMPTION: gutter feet default to the report eave length (edit Gutter ft to override); 10 ft per section.'),
+    mk(`${ds} downspout (10 ft piece)`, 'piece', 'downspoutLF', 'coverage', 10, p(18, 26), 'ASSUMPTION: 10 ft per piece.'),
+    mk(`${ds} elbow A`, 'each', 'downspoutLF', 'coverage', 10, p(4.5, 6.5), 'ASSUMPTION: one drop per ~20 ft of downspout, 2 A elbows per drop → 1 per 10 ft. Edit or override with your count.'),
+    mk(`${ds} elbow B`, 'each', 'downspoutLF', 'coverage', 20, p(4.5, 6.5), 'ASSUMPTION: 1 B elbow per drop (~20 ft of downspout). Edit or override.'),
+    mk(`${sz} inside corner`, 'each', 'insideCorners', 'per', 1, p(14, 18)),
+    mk(`${sz} outside corner`, 'each', 'outsideCorners', 'per', 1, p(14, 18)),
+    mk(`${sz} miter (3 ft)`, 'each', 'miters', 'per', 1, p(22, 28)),
+    mk(`${sz} end cap`, 'each', 'gutterLF', 'coverage', 20, p(3, 4), 'ASSUMPTION: 2 end caps per ~40 ft run → 1 per 20 ft. Override with your count.'),
+    mk(`${sz} hidden hanger`, 'each', 'gutterLF', 'coverage', 2, p(1.25, 1.6), 'ASSUMPTION: one hanger every 24 in (2 ft). Edit spacing (e.g. 1.5 for snow load).'),
+    mk('Gutter screws / fasteners (box of 100)', 'box', 'gutterLF', 'coverage', 100, p(12, 14), 'ASSUMPTION: 1 box per 100 ft of gutter.'),
+    mk('Gutter sealant (tube)', 'tube', 'gutterLF', 'coverage', 25, p(9, 10), 'ASSUMPTION: 1 tube per 25 ft of gutter.'),
+    mk('Downspout straps / brackets', 'each', 'downspoutLF', 'coverage', 6, p(2, 2.5), 'ASSUMPTION: one strap every 6 ft of downspout.'),
+    mk('Rain chain', 'ft', 'chainLF', 'per', 1, p(9, 10)),
+    mk(`${sz} gutter guard / leaf screen`, 'ft', 'guardLF', 'per', 1, p(3.5, 4.25), 'Optional: only priced when guard feet are entered.'),
+  ];
+}
+
+function gutterLabor(t: GutterTypeId): Line[] {
+  const six = t === 'gutter_6in';
+  return [
+    mk('Gutter install', 'LF', 'gutterLF', 'per', 1, six ? 5 : 4.5),
+    mk('Downspout install', 'LF', 'downspoutLF', 'per', 1, six ? 4 : 3.5),
+    mk('Inside corner install', 'each', 'insideCorners', 'per', 1, 15),
+    mk('Outside corner install', 'each', 'outsideCorners', 'per', 1, 15),
+    mk('Miter install', 'each', 'miters', 'per', 1, 20),
+    mk('Rain chain install', 'LF', 'chainLF', 'per', 1, 3),
+    mk('Gutter guard install', 'LF', 'guardLF', 'per', 1, six ? 2.5 : 2),
+    mk('Old gutter removal & haul-off', 'LF', 'gutterLF', 'per', 1, 1.25, 'ASSUMPTION: existing gutters are removed along the full gutter length. Set qty override 0 if new construction.'),
+  ];
+}
+
 function typeLabor(install: string, installRate: number, extra: Line[] = []): Line[] {
   return [
     mk('Tear-off', 'SQ', 'squares', 'per', 1, 45),
@@ -406,6 +533,8 @@ export function defaultMaterialsFor(t: RoofTypeId): Line[] {
     case 'snap_lock': return standingSeamMaterials(false);
     case 'mech_lock': return standingSeamMaterials(true);
     case 'brava': return bravaMaterials();
+    case 'gutter_5in':
+    case 'gutter_6in': return gutterMaterials(t);
     default: return defaultMaterials();
   }
 }
@@ -416,6 +545,8 @@ export function defaultLaborFor(t: RoofTypeId): Line[] {
     case 'snap_lock': return typeLabor('Snap-Lock panel install', 300);
     case 'mech_lock': return typeLabor('Mechanical-lock panel install', 330, [mk('Mechanical seaming', 'SQ', 'squares', 'per', 1, 40)]);
     case 'brava': return typeLabor('Brava shake install', 275);
+    case 'gutter_5in':
+    case 'gutter_6in': return gutterLabor(t);
     default: return defaultLabor();
   }
 }

@@ -13,6 +13,12 @@ import {
   parseLength,
   isMissingCountColumnError,
   isMissingItemsRefusal,
+  isRoofTypeCheckError,
+  isGutterType,
+  gutterSummary,
+  GUTTER_FIELDS,
+  GUTTER_DB_PENDING_MSG,
+  type GutterInputKey,
   PLACEHOLDER_TAG,
   roofTypeOf,
   switchRoofType,
@@ -300,7 +306,9 @@ export default function Estimate({ jobId }: { jobId: string }) {
       const out = await fn();
       if (out) setMsg(out);
     } catch (e) {
-      setErr(isMissingItemsRefusal(e as Error)
+      setErr(isRoofTypeCheckError(e as Error)
+        ? `${label}: ${GUTTER_DB_PENDING_MSG}`
+        : isMissingItemsRefusal(e as Error)
         ? `${label}: the database refused — this estimate still has items missing from the report. Enter the missing lengths (or 0 / "no valleys"), save, then approve.`
         : `${label}: ${(e as Error).message}`);
     } finally {
@@ -433,7 +441,10 @@ export default function Estimate({ jobId }: { jobId: string }) {
           {ROOF_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
         </select>
         {ROOF_TYPES.find((t) => t.id === roofTypeOf(data))?.note && <p className="placeholder">{ROOF_TYPES.find((t) => t.id === roofTypeOf(data))?.note}</p>}
-        {roofTypeOf(data) !== 'asphalt_shingle' && (
+        {isGutterType(roofTypeOf(data)) && (
+          <p className="placeholder" role="note">Gutters are new: the database update that allows saving gutter estimates may still be pending. If saving is refused you will see a clear message — nothing is lost on screen, but it is not saved until the database change is applied.</p>
+        )}
+        {roofTypeOf(data) !== 'asphalt_shingle' && !isGutterType(roofTypeOf(data)) && (
           <p className="muted small">Panel/tile counts come from roof area + waste. Trim comes from the report’s ridge, hip, eave, rake and valley lengths below — anything missing is flagged, not guessed. Coverage widths are editable ASSUMPTIONS on each line.</p>
         )}
       </div>
@@ -489,6 +500,51 @@ export default function Estimate({ jobId }: { jobId: string }) {
           <b>{d.squares}</b> squares · steep {d.steepSquares} SQ · leak barrier {d.leakBarrierSqft} sq ft
         </p>
       </div>
+
+      {isGutterType(roofTypeOf(data)) && (() => {
+        const m = data.measurements;
+        const g = gutterSummary(m);
+        const setG = (k: GutterInputKey, v: string, label: string) => {
+          const next = { ...m };
+          if (v === '') delete next[k];
+          else {
+            const n = parseLength(v);
+            if (n === null) return setErr(`${label}: “${v}” is not a valid number (must be 0 or more).`);
+            next[k] = n;
+          }
+          setErr('');
+          update({ measurements: next });
+        };
+        return (
+          <div className="card">
+            <h2>Gutters</h2>
+            <div className="grid2">
+              {GUTTER_FIELDS.map((fld) => (
+                <label key={fld.key}>{fld.label} ({fld.unit})
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    placeholder={fld.key === 'gutterFeet' ? (m.eaves !== undefined ? `${m.eaves} (eaves)` : 'missing') : fld.key === 'downspoutFeet' ? 'missing' : '0'}
+                    value={m[fld.key] ?? ''}
+                    disabled={readOnly || (fld.key === 'downspoutFeet' && !!m.noDownspouts)}
+                    onChange={(e) => setG(fld.key, e.target.value, fld.label)}
+                  />
+                </label>
+              ))}
+            </div>
+            <label className="row gap small">
+              <input type="checkbox" checked={!!m.noDownspouts} disabled={readOnly}
+                onChange={(e) => { const n = { ...m }; if (e.target.checked) n.noDownspouts = true; else delete n.noDownspouts; update({ measurements: n }); }} />
+              None — no downspouts on this job
+            </label>
+            <p className="placeholder small">ASSUMPTION: gutter feet default to the report eave length — type a number to override. Guard is only priced when guard feet are entered.</p>
+            <p className="derived">
+              Gutter <b>{Number.isNaN(g.gutterFeet) ? 'MISSING' : `${g.gutterFeet} ft (${g.gutterSections} × 10 ft)`}</b> · downspouts <b>{m.noDownspouts ? 'none' : Number.isNaN(g.downspoutFeet) ? 'MISSING' : `${g.downspoutFeet} ft (${g.downspoutPieces} × 10 ft)`}</b>
+            </p>
+          </div>
+        );
+      })()}
 
       <div className="card">
         <h2>Materials</h2>
