@@ -12,7 +12,21 @@ export interface Measurements {
   flashing: number; // other flashing LF
   valley: number; // valley LF
   dripEdge: number; // drip edge LF
+  // Raw report lengths (optional). undefined = not in the report / not entered -> shown as "missing", never guessed.
+  ridges?: number; // ridge LF
+  hips?: number; // hip LF
+  eaves?: number; // eave LF
+  rakes?: number; // rake LF
 }
+
+export type ReportLengthKey = 'ridges' | 'hips' | 'eaves' | 'rakes';
+/** Report lengths used by metal / synthetic roof types. Left blank when the report does not state them. */
+export const REPORT_LENGTH_FIELDS: { key: ReportLengthKey; label: string; unit: string }[] = [
+  { key: 'ridges', label: 'Ridges (report)', unit: 'LF' },
+  { key: 'hips', label: 'Hips (report)', unit: 'LF' },
+  { key: 'eaves', label: 'Eaves (report)', unit: 'LF' },
+  { key: 'rakes', label: 'Rakes (report)', unit: 'LF' },
+];
 
 export const MEASUREMENT_FIELDS: { key: keyof Measurements; label: string; unit: string }[] = [
   { key: 'area', label: 'Roof area', unit: 'sq ft' },
@@ -51,6 +65,13 @@ export function normalizeMeasurements(raw: unknown): Measurements {
       if (Number.isFinite(n)) out[f.key] = n;
     }
   }
+  for (const f of REPORT_LENGTH_FIELDS) {
+    const v = r[f.key];
+    if (v !== undefined && v !== null && v !== '') {
+      const n = Number(v);
+      if (Number.isFinite(n) && n >= 0) out[f.key] = n;
+    }
+  }
   return out;
 }
 
@@ -71,6 +92,15 @@ export type DriverKey =
   | 'stepPlusFlashing'
   | 'valley'
   | 'dripEdge'
+  // roof-type drivers (NaN = length missing from report -> qty 0 + "missing from report" note)
+  | 'areaWithWaste'
+  | 'ridgesLF'
+  | 'ridgesPlusHips'
+  | 'eavesLF'
+  | 'rakesLF'
+  | 'eavesPlusRakes'
+  | 'valleyLF'
+  | 'eavesValleySqft'
   | 'none';
 
 export const DRIVER_LABELS: Record<DriverKey, string> = {
@@ -84,6 +114,14 @@ export const DRIVER_LABELS: Record<DriverKey, string> = {
   stepPlusFlashing: 'Step + other flashing LF',
   valley: 'Valley LF',
   dripEdge: 'Drip edge LF',
+  areaWithWaste: 'Roof area incl. waste (sq ft)',
+  ridgesLF: 'Ridges LF (report)',
+  ridgesPlusHips: 'Ridges + hips LF (report)',
+  eavesLF: 'Eaves LF (report)',
+  rakesLF: 'Rakes LF (report)',
+  eavesPlusRakes: 'Eaves + rakes LF (report)',
+  valleyLF: 'Valleys LF (report)',
+  eavesValleySqft: '(Eaves + valleys) × strip width, sq ft',
   none: 'Fixed quantity',
 };
 
@@ -102,9 +140,35 @@ export function computeDrivers(m: Measurements): Drivers {
     stepPlusFlashing: m.stepFlashing + m.flashing,
     valley: m.valley,
     dripEdge: m.dripEdge,
+    ...lengthDrivers(m),
     none: 0,
   };
 }
+
+const has = (v: number | undefined): v is number => v !== undefined && v !== null && Number.isFinite(v);
+const sumOrNaN = (...vs: (number | undefined)[]) => (vs.every(has) ? vs.reduce<number>((a, b) => a + (b as number), 0) : NaN);
+
+function lengthDrivers(m: Measurements) {
+  const valley = m.valley > 0 ? m.valley : NaN; // 0 = not in report (or no valleys) -> flagged, never guessed
+  return {
+    areaWithWaste: round2(m.area * (1 + m.waste / 100)),
+    ridgesLF: sumOrNaN(m.ridges),
+    ridgesPlusHips: sumOrNaN(m.ridges, m.hips),
+    eavesLF: sumOrNaN(m.eaves),
+    rakesLF: sumOrNaN(m.rakes),
+    eavesPlusRakes: sumOrNaN(m.eaves, m.rakes),
+    valleyLF: valley,
+    eavesValleySqft: Number.isNaN(valley) || !has(m.eaves) ? NaN : round2((m.eaves + valley) * m.leakBarrierWidth),
+  };
+}
+
+/** True when the line's quantity depends on a report length that is missing (and no override is entered). */
+export function lineMissing(line: Line, d: Drivers): boolean {
+  if (line.override !== null && line.override !== undefined && Number.isFinite(Number(line.override))) return false;
+  if (line.mode === 'fixed' || line.driver === 'none') return false;
+  return Number.isNaN(d[line.driver]);
+}
+export const MISSING_NOTE = 'missing from report — enter the length or a quantity override';
 
 /**
  * mode:
@@ -125,6 +189,8 @@ export interface Line {
   price: number; // unit price $
   override: number | null;
   custom?: boolean;
+  /** Visible, editable ASSUMPTION behind the rate (e.g. panel coverage width). */
+  assumption?: string;
 }
 
 export function lineQty(line: Line, d: Drivers): number {
@@ -206,18 +272,150 @@ export interface EstimateData {
   taxPct: number; // applied to materials; MT has no state sales tax, default 0
   targetGp: number; // % e.g. 30
   notes?: string;
+  /** undefined = asphalt shingles (all estimates made before roof types existed). */
+  roofType?: RoofTypeId;
 }
 
-export function newEstimateData(m?: Measurements, source = '', catalog?: { materials?: Line[]; labor?: Line[] }): EstimateData {
+export function newEstimateData(
+  m?: Measurements,
+  source = '',
+  catalog?: { materials?: Line[]; labor?: Line[] },
+  roofType: RoofTypeId = 'asphalt_shingle',
+): EstimateData {
   const fresh = (lines: Line[]) => lines.map((l) => ({ ...l, id: newId(), override: null }));
-  return {
+  const d: EstimateData = {
     measurements: m ?? { ...EMPTY_MEASUREMENTS },
     measurementSource: source,
-    materials: catalog?.materials?.length ? fresh(catalog.materials) : defaultMaterials(),
-    labor: catalog?.labor?.length ? fresh(catalog.labor) : defaultLabor(),
+    materials: catalog?.materials?.length ? fresh(catalog.materials) : defaultMaterialsFor(roofType),
+    labor: catalog?.labor?.length ? fresh(catalog.labor) : defaultLaborFor(roofType),
     taxPct: 0,
     targetGp: 30,
   };
+  if (roofType !== 'asphalt_shingle') d.roofType = roofType;
+  return d;
+}
+
+// ---------------- Roof types ----------------
+export type RoofTypeId = 'asphalt_shingle' | 'tuff_rib' | 'snap_lock' | 'mech_lock' | 'brava';
+export const ROOF_TYPES: { id: RoofTypeId; label: string; note?: string }[] = [
+  { id: 'asphalt_shingle', label: 'Asphalt shingles' },
+  { id: 'tuff_rib', label: '3-ft Tuff Rib (exposed-fastener metal)' },
+  { id: 'snap_lock', label: 'Snap-Lock standing seam (metal)' },
+  { id: 'mech_lock', label: 'Mechanical-lock standing seam (metal)', note: 'Mechanical-lock seams must be closed with a mechanical seamer (rent or own) after panels are installed.' },
+  { id: 'brava', label: 'Brava synthetic shake' },
+];
+export const roofTypeOf = (e: Pick<EstimateData, 'roofType'>): RoofTypeId => e.roofType ?? 'asphalt_shingle';
+export const roofTypeLabel = (id: RoofTypeId | undefined) => ROOF_TYPES.find((t) => t.id === (id ?? 'asphalt_shingle'))?.label ?? 'Asphalt shingles';
+/** price_catalog row id holding team defaults for a roof type (shingles keep the original 'default' row). */
+export const catalogIdFor = (id: RoofTypeId) => (id === 'asphalt_shingle' ? 'default' : `roof:${id}`);
+
+const PH = ' (PLACEHOLDER price)';
+function mk(name: string, unit: string, driver: DriverKey, mode: LineMode, rate: number, price: number, assumption?: string): Line {
+  const l: Line = { id: newId(), name, unit, driver, mode, rate, price, override: null };
+  if (assumption) l.assumption = assumption;
+  return l;
+}
+
+// All prices below are PLACEHOLDERS, not supplier quotes. Every rate is an editable ASSUMPTION.
+function tuffRibMaterials(): Line[] {
+  return [
+    mk('Tuff Rib panels, 3 ft coverage' + PH, 'LF', 'areaWithWaste', 'coverage', 3, 3.25, 'ASSUMPTION: 36 in (3 ft) coverage width per panel → panel LF = area incl. waste ÷ 3. Edit the coverage if your panel differs.'),
+    mk('Ridge / hip cap (10 ft)' + PH, 'piece', 'ridgesPlusHips', 'coverage', 10, 28, 'ASSUMPTION: 10 ft net per piece after laps.'),
+    mk('Eave / drip trim (10 ft)' + PH, 'piece', 'eavesLF', 'coverage', 10, 14),
+    mk('Rake / gable trim (10 ft)' + PH, 'piece', 'rakesLF', 'coverage', 10, 22),
+    mk('Valley trim / flashing (10 ft)' + PH, 'piece', 'valleyLF', 'coverage', 10, 35),
+    mk('Synthetic underlayment' + PH, 'roll', 'squares', 'coverage', 10, 165, 'ASSUMPTION: 10 squares per roll.'),
+    mk('Screws with washers (bag of 250)' + PH, 'bag', 'squares', 'coverage', 3, 45, 'ASSUMPTION: ~80 screws per square → 1 bag per 3 squares.'),
+    mk('Inside foam closures (3 ft) at eaves' + PH, 'piece', 'eavesLF', 'coverage', 3, 2.5, 'ASSUMPTION: 3 ft per closure strip.'),
+    mk('Outside foam closures (3 ft) at ridge/hip' + PH, 'piece', 'ridgesPlusHips', 'coverage', 1.5, 2.5, 'ASSUMPTION: both sides of ridge/hip → 1 strip per 1.5 ft.'),
+    mk('Sealant (tube)' + PH, 'tube', 'squares', 'coverage', 5, 9, 'ASSUMPTION: 1 tube per 5 squares.'),
+    mk('Butyl tape (roll)' + PH, 'roll', 'none', 'fixed', 4, 18, 'ASSUMPTION: 4 rolls — edit per job.'),
+    mk('Pipe boots (metal roof)' + PH, 'each', 'none', 'fixed', 3, 22, 'ASSUMPTION: 3 boots — count on site / from report.'),
+  ];
+}
+
+function standingSeamMaterials(mech: boolean): Line[] {
+  const kind = mech ? 'Mechanical-lock' : 'Snap-Lock';
+  const lines = [
+    mk(`${kind} standing seam panels, 16 in coverage` + PH, 'LF', 'areaWithWaste', 'coverage', 1.333, mech ? 6.5 : 5.5, 'ASSUMPTION: 16 in (1.333 ft) coverage width per panel → panel LF = area incl. waste ÷ 1.333. Edit for 12/18 in panels.'),
+    mk('Panel clips' + PH, 'each', 'areaWithWaste', 'coverage', 2.67, 0.85, 'ASSUMPTION: 1 clip per 2.67 sq ft (16 in seam spacing × clips every 24 in).'),
+    mk('Clip fasteners (box of 250)' + PH, 'box', 'areaWithWaste', 'coverage', 333, 40, 'ASSUMPTION: 2 screws per clip → 1 box per ~333 sq ft.'),
+    mk('Ridge / hip cap (10 ft)' + PH, 'piece', 'ridgesPlusHips', 'coverage', 10, 38, 'ASSUMPTION: 10 ft net per piece after laps.'),
+    mk('Eave / drip trim (10 ft)' + PH, 'piece', 'eavesLF', 'coverage', 10, 18),
+    mk('Rake / gable trim (10 ft)' + PH, 'piece', 'rakesLF', 'coverage', 10, 26),
+    mk('Valley flashing (10 ft)' + PH, 'piece', 'valleyLF', 'coverage', 10, 42),
+    mk('High-temp synthetic underlayment' + PH, 'roll', 'squares', 'coverage', 2, 155, 'ASSUMPTION: 2 squares per roll (high-temp). Use regular synthetic by editing.'),
+    mk('Ice & water at eaves + valleys' + PH, 'roll', 'eavesValleySqft', 'coverage', 200, 119, 'ASSUMPTION: 200 sq ft per roll; strip width = Leak barrier strip width.'),
+    mk('Z-closures / seam closures at ridge (10 ft)' + PH, 'piece', 'ridgesPlusHips', 'coverage', 5, 12, 'ASSUMPTION: both sides of ridge/hip → 1 piece per 5 ft.'),
+    mk('Pop rivets / trim fasteners (box)' + PH, 'box', 'squares', 'coverage', 15, 25, 'ASSUMPTION: 1 box per 15 squares.'),
+    mk('Sealant (tube)' + PH, 'tube', 'squares', 'coverage', 5, 9, 'ASSUMPTION: 1 tube per 5 squares.'),
+    mk('Butyl tape (roll)' + PH, 'roll', 'none', 'fixed', 4, 18, 'ASSUMPTION: 4 rolls — edit per job.'),
+    mk('Pipe boots (metal roof)' + PH, 'each', 'none', 'fixed', 3, 22, 'ASSUMPTION: 3 boots — count on site / from report.'),
+  ];
+  if (mech) lines.push(mk('Mechanical seamer rental — REQUIRED to close mechanical-lock seams' + PH, 'rental', 'none', 'fixed', 1, 250, 'NOTE: seams must be mechanically seamed; rent or use own seamer.'));
+  return lines;
+}
+
+function bravaMaterials(): Line[] {
+  return [
+    mk('Brava synthetic shake tiles (bundle)' + PH, 'bundle', 'squares', 'per', 4, 120, 'ASSUMPTION: 4 bundles per square at standard exposure — check Brava’s spec for your exposure and edit.'),
+    mk('Synthetic underlayment' + PH, 'roll', 'squares', 'coverage', 10, 165, 'ASSUMPTION: 10 squares per roll.'),
+    mk('Ice & water at eaves + valleys' + PH, 'roll', 'eavesValleySqft', 'coverage', 200, 119, 'ASSUMPTION: 200 sq ft per roll; strip width = Leak barrier strip width.'),
+    mk('Stainless / coil nails (box)' + PH, 'box', 'squares', 'coverage', 5, 70, 'ASSUMPTION: 1 box per 5 squares.'),
+    mk('Brava hip & ridge caps (bundle)' + PH, 'bundle', 'ridgesPlusHips', 'coverage', 20, 140, 'ASSUMPTION: 20 LF per bundle.'),
+    mk('Brava starter (bundle)' + PH, 'bundle', 'eavesLF', 'coverage', 30, 95, 'ASSUMPTION: 30 LF per bundle.'),
+    mk('Valley metal (10 ft)' + PH, 'piece', 'valleyLF', 'coverage', 10, 28),
+    mk('Drip edge (10 ft), eaves + rakes' + PH, 'piece', 'eavesPlusRakes', 'coverage', 10, 12),
+    mk('Sealant (tube)' + PH, 'tube', 'squares', 'coverage', 5, 9, 'ASSUMPTION: 1 tube per 5 squares.'),
+    mk('Pipe boots' + PH, 'each', 'none', 'fixed', 3, 18, 'ASSUMPTION: 3 boots — count on site / from report.'),
+  ];
+}
+
+function typeLabor(install: string, installRate: number, extra: Line[] = []): Line[] {
+  return [
+    mk('Tear-off' + PH, 'SQ', 'squares', 'per', 1, 45),
+    mk('Underlayment' + PH, 'SQ', 'squares', 'per', 1, 20),
+    mk(install + PH, 'SQ', 'squares', 'per', 1, installRate),
+    mk('Steep pitch surcharge' + PH, 'SQ', 'steepSquares', 'per', 1, 30),
+    mk('Eave + rake trim install' + PH, 'LF', 'eavesPlusRakes', 'per', 1, 3),
+    mk('Ridge / hip cap install' + PH, 'LF', 'ridgesPlusHips', 'per', 1, 5),
+    mk('Valley install' + PH, 'LF', 'valleyLF', 'per', 1, 6),
+    ...extra,
+    mk('Dumpster / disposal' + PH, 'each', 'none', 'fixed', 1, 450),
+  ];
+}
+
+export function defaultMaterialsFor(t: RoofTypeId): Line[] {
+  switch (t) {
+    case 'tuff_rib': return tuffRibMaterials();
+    case 'snap_lock': return standingSeamMaterials(false);
+    case 'mech_lock': return standingSeamMaterials(true);
+    case 'brava': return bravaMaterials();
+    default: return defaultMaterials();
+  }
+}
+
+export function defaultLaborFor(t: RoofTypeId): Line[] {
+  switch (t) {
+    case 'tuff_rib': return typeLabor('Tuff Rib panel install', 180);
+    case 'snap_lock': return typeLabor('Snap-Lock panel install', 300);
+    case 'mech_lock': return typeLabor('Mechanical-lock panel install', 330, [mk('Mechanical seaming' + PH, 'SQ', 'squares', 'per', 1, 40)]);
+    case 'brava': return typeLabor('Brava shake install', 275);
+    default: return defaultLabor();
+  }
+}
+
+/** Switch an estimate to another roof type: replaces generated lines with that type's defaults, keeps custom lines. */
+export function switchRoofType(e: EstimateData, t: RoofTypeId, catalog?: { materials?: Line[]; labor?: Line[] }): EstimateData {
+  const fresh = (lines: Line[]) => lines.map((l) => ({ ...l, id: newId(), override: null }));
+  const keep = (ls: Line[]) => ls.filter((l) => l.custom);
+  const out: EstimateData = {
+    ...e,
+    materials: [...(catalog?.materials?.length ? fresh(catalog.materials) : defaultMaterialsFor(t)), ...keep(e.materials)],
+    labor: [...(catalog?.labor?.length ? fresh(catalog.labor) : defaultLaborFor(t)), ...keep(e.labor)],
+  };
+  out.roofType = t;
+  return out;
 }
 
 export interface Totals {

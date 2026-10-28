@@ -1,4 +1,4 @@
-import { computeTotals, lineQty, lineTotal, type EstimateData } from './estimate';
+import { MISSING_NOTE, REPORT_LENGTH_FIELDS, ROOF_TYPES, computeTotals, lineMissing, lineQty, lineTotal, roofTypeLabel, roofTypeOf, type EstimateData } from './estimate';
 import { money } from './stages';
 import { companyLines, defaultTemplate, fillPlaceholders, formatDate, shortId, type FillValues, type OrderTemplate } from './templates';
 
@@ -47,6 +47,11 @@ export function workOrderText(e: EstimateData, ctx: OrderContext, includePrices:
   const m = e.measurements;
   const lines: string[] = [];
   if (ctx.revision) lines.push(`Estimate: revision ${ctx.revision}${ctx.status ? ' (' + ctx.status + ')' : ''}`, '');
+  const rt = roofTypeOf(e);
+  lines.push(`ROOF TYPE: ${roofTypeLabel(rt)}`);
+  const rtNote = ROOF_TYPES.find((x) => x.id === rt)?.note;
+  if (rtNote) lines.push(`NOTE: ${rtNote}`);
+  lines.push('');
   lines.push('ROOF');
   lines.push(`- ${t.drivers.squares} squares (area ${m.area} sq ft + ${m.waste}% waste)`);
   lines.push(`- Steep pitch share: ${m.steepShare}% (${t.drivers.steepSquares} SQ)`);
@@ -56,6 +61,8 @@ export function workOrderText(e: EstimateData, ctx: OrderContext, includePrices:
   lines.push(
     `- Leak barrier ${m.leakBarrierLF} LF @ ${m.leakBarrierWidth} ft · Step flashing ${m.stepFlashing} LF · Flashing ${m.flashing} LF`,
   );
+  if (rt !== 'asphalt_shingle')
+    lines.push('- ' + REPORT_LENGTH_FIELDS.map((f) => `${f.label.replace(' (report)', '')} ${m[f.key] ?? 'MISSING'}${m[f.key] !== undefined ? ' LF' : ''}`).join(' · '));
   if (e.measurementSource) lines.push(`- Measurements from: ${e.measurementSource}`);
   lines.push('');
   lines.push('SCOPE OF WORK');
@@ -71,6 +78,7 @@ export function workOrderText(e: EstimateData, ctx: OrderContext, includePrices:
   lines.push('MATERIALS ON SITE');
   for (const l of e.materials) {
     const q = lineQty(l, t.drivers);
+    if (lineMissing(l, t.drivers)) { lines.push(`- ${l.name}: ?? ${l.unit} — ${MISSING_NOTE}`); continue; }
     if (q === 0) continue;
     lines.push(`- ${l.name}: ${fmtQty(q)} ${l.unit}`);
   }
@@ -80,9 +88,11 @@ export function workOrderText(e: EstimateData, ctx: OrderContext, includePrices:
 export function materialOrderText(e: EstimateData, ctx: OrderContext, includePrices: boolean, tpl: OrderTemplate = defaultTemplate('material_order')): string {
   const t = computeTotals(e);
   const lines: string[] = [];
+  lines.push(`ROOF TYPE: ${roofTypeLabel(roofTypeOf(e))}`, '');
   lines.push('ITEMS');
   for (const l of e.materials) {
     const q = lineQty(l, t.drivers);
+    if (lineMissing(l, t.drivers)) { lines.push(`- ?? ${l.unit} — ${l.name} — ${MISSING_NOTE}`); continue; }
     if (q === 0) continue;
     lines.push(
       `- ${fmtQty(q)} ${l.unit} — ${l.name}` + (includePrices ? ` @ ${money(l.price)} = ${money(lineTotal(l, t.drivers))}` : ''),

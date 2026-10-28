@@ -3,6 +3,14 @@ import { logEvent, supabase, type EstimateRow, type Job } from '../lib/supabase'
 import {
   DRIVER_LABELS,
   MEASUREMENT_FIELDS,
+  MISSING_NOTE,
+  REPORT_LENGTH_FIELDS,
+  ROOF_TYPES,
+  catalogIdFor,
+  lineMissing,
+  roofTypeOf,
+  switchRoofType,
+  type RoofTypeId,
   computeTotals,
   lineQty,
   lineTotal,
@@ -20,8 +28,10 @@ import { money, money0 } from '../lib/stages';
 import { go } from '../lib/nav';
 
 type Catalog = { materials?: Line[]; labor?: Line[] } | undefined;
+type Catalogs = Partial<Record<string, Catalog>>; // keyed by price_catalog id
 
-function hydrate(raw: unknown, job: Job, catalog: Catalog): EstimateData {
+function hydrate(raw: unknown, job: Job, catalogs: Catalogs): EstimateData {
+  const catalog = catalogs['default'];
   const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<EstimateData>;
   if (!r.materials || !r.labor) {
     return newEstimateData(normalizeMeasurements(job.measurements), job.measurement_source || '', catalog);
@@ -34,6 +44,7 @@ function hydrate(raw: unknown, job: Job, catalog: Catalog): EstimateData {
     taxPct: Number(r.taxPct) || 0,
     targetGp: r.targetGp === undefined ? 30 : Number(r.targetGp),
     notes: r.notes ?? '',
+    ...(r.roofType && r.roofType !== 'asphalt_shingle' ? { roofType: r.roofType } : {}),
   };
 }
 
@@ -74,8 +85,11 @@ function LineEditor({
 }) {
   const q = lineQty(line, drivers);
   const up = (p: Partial<Line>) => onChange({ ...line, ...p });
+  const missing = lineMissing(line, drivers);
   const formula =
-    line.override !== null
+    missing
+      ? `${DRIVER_LABELS[line.driver]} ${MISSING_NOTE}`
+      : line.override !== null
       ? 'override'
       : line.mode === 'fixed'
         ? 'fixed qty'
@@ -107,6 +121,17 @@ function LineEditor({
           <span>{money(lineTotal(line, drivers))}</span>
         </div>
       </div>
+      {missing && <p className="error small">⚠ {DRIVER_LABELS[line.driver]}: {MISSING_NOTE}</p>}
+      {line.assumption && (
+        <div className="row gap">
+          <span className="placeholder small grow">{line.assumption}</span>
+          {line.mode !== 'fixed' && (
+            <label>{line.mode === 'per' ? 'Rate' : 'Coverage/unit'}
+              <input type="number" inputMode="decimal" value={line.rate} disabled={readOnly} onChange={(e) => up({ rate: num(e.target.value) })} />
+            </label>
+          )}
+        </div>
+      )}
       <details>
         <summary className="muted small">{formula}</summary>
         <div className="row gap wrap">
@@ -141,7 +166,7 @@ export default function Estimate({ jobId }: { jobId: string }) {
   const [rows, setRows] = useState<EstimateRow[]>([]);
   const [current, setCurrent] = useState<EstimateRow | null>(null);
   const [data, setData] = useState<EstimateData | null>(null);
-  const [catalog, setCatalog] = useState<Catalog>(undefined);
+  const [catalog, setCatalog] = useState<Catalogs>({});
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -152,12 +177,14 @@ export default function Estimate({ jobId }: { jobId: string }) {
     const [j, e, c] = await Promise.all([
       supabase.from('jobs').select('*, customers(*)').eq('id', jobId).maybeSingle(),
       supabase.from('estimates').select('*').eq('job_id', jobId).order('revision', { ascending: false }),
-      supabase.from('price_catalog').select('*').eq('id', 'default').maybeSingle(),
+      supabase.from('price_catalog').select('*').in('id', ROOF_TYPES.map((t) => catalogIdFor(t.id))),
     ]);
     if (j.error || !j.data) return setErr(j.error?.message || 'Job not found');
     if (e.error) return setErr(e.error.message);
     const jobRow = j.data as Job;
-    const cat: Catalog = c.data ? { materials: c.data.materials as Line[], labor: c.data.labor as Line[] } : undefined;
+    const cat: Catalogs = {};
+    for (const row of (c.data as { id: string; materials: unknown; labor: unknown }[] | null) ?? [])
+      cat[row.id] = { materials: row.materials as Line[], labor: row.labor as Line[] };
     let list = (e.data as EstimateRow[]) ?? [];
     if (list.length === 0) {
       // No estimate yet: create draft revision 1 from the job's measurements + default lines right away,
@@ -216,7 +243,7 @@ export default function Estimate({ jobId }: { jobId: string }) {
 
   const dbFields = (d: EstimateData) => {
     const t = computeTotals(d);
-    return { data: d, material_total: t.materialTotal, labor_total: t.laborTotal, target_gp: d.targetGp, price: t.price };
+    return { data: d, roof_type: roofTypeOf(d), material_total: t.materialTotal, labor_total: t.laborTotal, target_gp: d.targetGp, price: t.price };
   };
 
   async function persist(): Promise<EstimateRow | null> {
@@ -295,13 +322,16 @@ export default function Estimate({ jobId }: { jobId: string }) {
 
   const saveDefaults = () =>
     run('Saving defaults failed', async () => {
-      if (!confirm('Save these material and labor lines (names, prices, coverage) as the team default for NEW estimates?')) return;
+      const rt = roofTypeOf(data);
+      const label = ROOF_TYPES.find((t) => t.id === rt)?.label;
+      if (!confirm(`Save these material and labor lines (names, prices, coverage) as the team default for NEW ${label} estimates?`)) return;
       const strip = (ls: Line[]) => ls.map((l) => ({ ...l, override: null }));
+      const id = catalogIdFor(rt);
       const { error } = await supabase
         .from('price_catalog')
-        .upsert({ id: 'default', materials: strip(data.materials), labor: strip(data.labor) });
+        .upsert({ id, materials: strip(data.materials), labor: strip(data.labor) });
       if (error) throw error;
-      setCatalog({ materials: data.materials, labor: data.labor });
+      setCatalog({ ...catalog, [id]: { materials: data.materials, labor: data.labor } });
       return 'Saved as team defaults';
     });
 
@@ -359,6 +389,27 @@ export default function Estimate({ jobId }: { jobId: string }) {
       </div>
 
       <div className="card">
+        <h2>Roof type</h2>
+        <select
+          aria-label="Roof type"
+          value={roofTypeOf(data)}
+          disabled={readOnly}
+          onChange={(e) => {
+            const t = e.target.value as RoofTypeId;
+            if (t === roofTypeOf(data)) return;
+            if (!confirm('Change roof type? Material and labor lines are replaced with that type’s default parts list (custom lines are kept, quantity overrides are cleared).')) return;
+            update(switchRoofType(data, t, catalog[catalogIdFor(t)]));
+          }}
+        >
+          {ROOF_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+        </select>
+        {ROOF_TYPES.find((t) => t.id === roofTypeOf(data))?.note && <p className="placeholder">{ROOF_TYPES.find((t) => t.id === roofTypeOf(data))?.note}</p>}
+        {roofTypeOf(data) !== 'asphalt_shingle' && (
+          <p className="muted small">Panel/tile counts come from roof area + waste. Trim comes from the report’s ridge, hip, eave, rake and valley lengths below — anything missing is flagged, not guessed. Coverage widths are editable ASSUMPTIONS on each line.</p>
+        )}
+      </div>
+
+      <div className="card">
         <div className="row between">
           <h2>Measurements</h2>
           {!readOnly && <button className="btn ghost small" onClick={() => (!dirty || confirm('Leave without saving?')) && go(`/job/${jobId}/measurements`)}>Upload PDF</button>}
@@ -370,6 +421,25 @@ export default function Estimate({ jobId }: { jobId: string }) {
           {MEASUREMENT_FIELDS.map((fld) => (
             <label key={fld.key}>{fld.label} ({fld.unit})
               <input id={`m-${fld.key}`} type="number" inputMode="decimal" value={data.measurements[fld.key]} disabled={readOnly} onChange={(e) => setM(fld.key, e.target.value)} />
+            </label>
+          ))}
+        </div>
+        <div className="grid2">
+          {REPORT_LENGTH_FIELDS.map((fld) => (
+            <label key={fld.key}>{fld.label} ({fld.unit})
+              <input
+                type="number"
+                inputMode="decimal"
+                placeholder="missing"
+                value={data.measurements[fld.key] ?? ''}
+                disabled={readOnly}
+                onChange={(e) => {
+                  const m = { ...data.measurements };
+                  if (e.target.value === '') delete m[fld.key];
+                  else m[fld.key] = Number(e.target.value);
+                  update({ measurements: m });
+                }}
+              />
             </label>
           ))}
         </div>

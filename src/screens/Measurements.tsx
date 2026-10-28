@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { logEvent, supabase, type EstimateRow, type Job } from '../lib/supabase';
-import { EMPTY_MEASUREMENTS, MEASUREMENT_FIELDS, computeTotals, normalizeMeasurements, type EstimateData, type Measurements as M } from '../lib/estimate';
+import { EMPTY_MEASUREMENTS, MEASUREMENT_FIELDS, REPORT_LENGTH_FIELDS, computeTotals, normalizeMeasurements, type EstimateData, type Measurements as M } from '../lib/estimate';
 import { parseReport, sumHints, STEEP_PITCH_DEFAULT, type ParsedReport } from '../lib/reportParser';
 import { extractInBrowser, MIN_TEXT_CHARS } from '../lib/pdfText';
 import { go } from '../lib/nav';
 
 type Vals = Record<keyof M, string>;
-const emptyVals = (): Vals => Object.fromEntries(MEASUREMENT_FIELDS.map((f) => [f.key, ''])) as Vals;
+const ALL_FIELDS = [...MEASUREMENT_FIELDS, ...REPORT_LENGTH_FIELDS];
+const emptyVals = (): Vals => Object.fromEntries(ALL_FIELDS.map((f) => [f.key, ''])) as Vals;
 
 interface Review {
   fileName: string;
@@ -50,6 +51,7 @@ export default function Measurements({ jobId }: { jobId: string }) {
       const parsed = parseReport(t.text, steepFrom);
       const vals = emptyVals();
       for (const f of MEASUREMENT_FIELDS) if (parsed.values[f.key] !== undefined) vals[f.key] = String(parsed.values[f.key]);
+      for (const f of REPORT_LENGTH_FIELDS) if (parsed.raw[f.key] !== undefined) vals[f.key] = String(parsed.raw[f.key]);
       const fmt = parsed.format === 'Unknown report' ? 'Measurement report' : parsed.format;
       setReview({ fileName: file.name, parsed, text: t.text, vals, source: `${fmt} PDF: ${file.name}` });
     } catch (e) {
@@ -62,7 +64,7 @@ export default function Measurements({ jobId }: { jobId: string }) {
   function byHand() {
     setNoText('');
     const vals = emptyVals();
-    for (const f of MEASUREMENT_FIELDS) if (saved[f.key] !== undefined && saved[f.key] !== '') vals[f.key] = String(saved[f.key]);
+    for (const f of ALL_FIELDS) if (saved[f.key] !== undefined && saved[f.key] !== '') vals[f.key] = String(saved[f.key]);
     setReview({ fileName: '', parsed: null, text: '', vals, source: job?.measurement_source || 'Entered by hand' });
   }
 
@@ -77,8 +79,8 @@ export default function Measurements({ jobId }: { jobId: string }) {
   async function useThese() {
     if (!review || !job) return;
     const out: Record<string, number> = {};
-    for (const f of MEASUREMENT_FIELDS) {
-      const v = review.vals[f.key].trim();
+    for (const f of ALL_FIELDS) {
+      const v = (review.vals[f.key] ?? '').trim();
       if (v === '') continue;
       const n = Number(v);
       if (!Number.isFinite(n) || n < 0) return setErr(`${f.label}: “${v}” is not a valid number.`);
@@ -162,8 +164,8 @@ export default function Measurements({ jobId }: { jobId: string }) {
 
           <div className="card">
             <div className="revhead"><span>Field</span>{review.parsed && <span>In report</span>}<span>Use</span></div>
-            {MEASUREMENT_FIELDS.map((f) => {
-              const found = review.parsed?.values[f.key];
+            {ALL_FIELDS.map((f) => {
+              const found = review.parsed?.values[f.key] ?? (f.key in (review.parsed?.raw ?? {}) ? review.parsed?.raw[f.key as keyof typeof review.parsed.raw] : undefined);
               const cur = saved[f.key];
               const hint = hints.filter((h) => h.field === f.key);
               return (
@@ -171,7 +173,7 @@ export default function Measurements({ jobId }: { jobId: string }) {
                   <div className="revlabel">
                     <b>{f.label}</b> <span className="muted small">({f.unit})</span>
                     {cur !== undefined && cur !== '' && <div className="muted small">Saved now: {String(cur)}</div>}
-                    {review.vals[f.key] === '' && EMPTY_MEASUREMENTS[f.key] > 0 && (
+                    {review.vals[f.key] === '' && (EMPTY_MEASUREMENTS[f.key] ?? 0) > 0 && (
                       <div className="muted small">If left empty the estimate uses the app default {EMPTY_MEASUREMENTS[f.key]} {f.unit}.</div>
                     )}
                   </div>
@@ -196,7 +198,7 @@ export default function Measurements({ jobId }: { jobId: string }) {
                     type="number"
                     inputMode="decimal"
                     placeholder="empty"
-                    value={review.vals[f.key]}
+                    value={review.vals[f.key] ?? ''}
                     onChange={(e) => setVal(f.key, e.target.value)}
                   />
                 </div>
