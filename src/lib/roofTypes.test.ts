@@ -106,7 +106,7 @@ describe('missing lengths', () => {
 
 describe('shingles unchanged', () => {
   it('default shingle estimate identical to legacy defaults', () => {
-    const strip = (ls: Line[]) => ls.map(({ id: _id, ...r }) => r);
+    const strip = (ls: Line[]) => ls.map((l) => { const r: Partial<Line> = { ...l }; delete r.id; return r; });
     expect(strip(defaultMaterialsFor('asphalt_shingle'))).toEqual(strip(defaultMaterials()));
     expect(strip(defaultLaborFor('asphalt_shingle'))).toEqual(strip(defaultLabor()));
     const e = newEstimateData(base);
