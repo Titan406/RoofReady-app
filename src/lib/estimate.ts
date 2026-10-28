@@ -319,6 +319,8 @@ export const catalogIdFor = (id: RoofTypeId) => (id === 'asphalt_shingle' ? 'def
 export const PLACEHOLDER_TAG = 'PLACEHOLDER price';
 /** Exact standing-seam coverage: 16 in = 4/3 ft. */
 export const SEAM_16IN_FT = 4 / 3;
+/** Exact clip coverage: (4/3 ft seam spacing) × 2 ft clip spacing = 8/3 sq ft per clip. */
+export const CLIP_SQFT = 8 / 3;
 /** Allow-list a stored roof type; anything unknown falls back to asphalt shingles. */
 export function parseRoofType(v: unknown): RoofTypeId {
   return ROOF_TYPES.some((t) => t.id === v) ? (v as RoofTypeId) : 'asphalt_shingle';
@@ -351,7 +353,7 @@ function standingSeamMaterials(mech: boolean): Line[] {
   const kind = mech ? 'Mechanical-lock' : 'Snap-Lock';
   const lines = [
     mk(`${kind} standing seam panels, 16 in coverage`, 'LF', 'areaWithWaste', 'coverage', SEAM_16IN_FT, mech ? 6.5 : 5.5, 'ASSUMPTION: 16 in (4/3 ft) coverage width per panel → panel LF = area incl. waste × 3 ÷ 4. Edit for 12/18 in panels.'),
-    mk('Panel clips', 'each', 'areaWithWaste', 'coverage', 2.67, 0.85, 'ASSUMPTION: 1 clip per 2.67 sq ft (16 in seam spacing × clips every 24 in).'),
+    mk('Panel clips', 'each', 'areaWithWaste', 'coverage', CLIP_SQFT, 0.85, 'ASSUMPTION: 1 clip per 8/3 sq ft (16 in seam spacing × clips every 24 in = 3/8 clip per sq ft).'),
     mk('Clip fasteners (box of 250)', 'box', 'areaWithWaste', 'coverage', 333, 40, 'ASSUMPTION: 2 screws per clip → 1 box per ~333 sq ft.'),
     mk('Ridge / hip cap (10 ft)', 'piece', 'ridgesPlusHips', 'coverage', 10, 38, 'ASSUMPTION: 10 ft net per piece after laps.'),
     mk('Eave / drip trim (10 ft)', 'piece', 'eavesLF', 'coverage', 10, 18),
@@ -472,3 +474,9 @@ export const parseLength = (v: string): number | null => {
   const n = Number(v);
   return v.trim() === '' || !Number.isFinite(n) || n < 0 ? null : n;
 };
+
+/** True when a Supabase/PostgREST error says the estimates.missing_count column does not exist yet. */
+export const isMissingCountColumnError = (e: { code?: string; message?: string } | null | undefined) =>
+  !!e && (e.code === 'PGRST204' || e.code === '42703') && /missing_count/.test(e.message ?? '');
+/** True when the database trigger refused approval because items are missing. */
+export const isMissingItemsRefusal = (e: { message?: string } | null | undefined) => /RR_MISSING_ITEMS/.test(e?.message ?? '');

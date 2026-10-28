@@ -50,10 +50,10 @@ describe('Tuff Rib', () => {
 
 describe('standing seam', () => {
   const d = computeDrivers(full);
-  it('Snap-Lock panels LF = ceil(2959.47/(4/3)) = 2220, clips = ceil(2959.47/2.67) = 1109', () => {
+  it('Snap-Lock panels LF = ceil(2959.47/(4/3)) = 2220, clips = ceil(2959.47/(8/3)) = 1110', () => {
     const m = defaultMaterialsFor('snap_lock');
     expect(lineQty(find(m, 'panels'), d)).toBe(2220);
-    expect(lineQty(find(m, 'clips'), d)).toBe(1109);
+    expect(lineQty(find(m, 'clips'), d)).toBe(1110);
     expect(lineQty(find(m, 'High-temp'), d)).toBe(15);
     // ice & water: (200 + 41) × 3 = 723 sq ft -> 4 rolls
     expect(lineQty(find(m, 'Ice & water'), d)).toBe(4);
@@ -176,5 +176,20 @@ describe('QC review fixes', () => {
     expect(l.placeholder).toBe(true);
     expect(l.name).not.toContain('PLACEHOLDER');
     expect(defaultMaterials()[0].placeholder).toBeUndefined();
+  });
+});
+
+import { CLIP_SQFT, isMissingCountColumnError, isMissingItemsRefusal } from './estimate';
+describe('QC follow-up', () => {
+  it('clips use exactly 8/3 sq ft per clip (3/8 clip per sq ft)', () => {
+    expect(CLIP_SQFT).toBe(8 / 3);
+    const l = find(defaultMaterialsFor('mech_lock'), 'clips');
+    expect(l.rate).toBe(8 / 3);
+    expect(lineQty(l, computeDrivers(full))).toBe(Math.ceil((2959.47 * 3) / 8));
+  });
+  it('detects missing column and DB approval refusal', () => {
+    expect(isMissingCountColumnError({ code: 'PGRST204', message: "Could not find the 'missing_count' column of 'estimates'" })).toBe(true);
+    expect(isMissingCountColumnError({ code: '23505', message: 'dup' })).toBe(false);
+    expect(isMissingItemsRefusal({ message: 'RR_MISSING_ITEMS: 3 items missing' })).toBe(true);
   });
 });

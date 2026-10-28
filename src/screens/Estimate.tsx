@@ -11,6 +11,8 @@ import {
   missingBanner,
   parseRoofType,
   parseLength,
+  isMissingCountColumnError,
+  isMissingItemsRefusal,
   PLACEHOLDER_TAG,
   roofTypeOf,
   switchRoofType,
@@ -52,6 +54,19 @@ function hydrate(raw: unknown, job: Job, catalogs: Catalogs): EstimateData {
   };
 }
 
+// Sends missing_count; if the DB column doesn't exist yet (migration not applied), retries once without it.
+let missingCountColumn = true;
+async function tolerant<T extends { error: { code?: string; message?: string } | null }>(fields: Record<string, unknown>, op: (f: Record<string, unknown>) => PromiseLike<T>): Promise<T> {
+  if (missingCountColumn) {
+    const res = await op(fields);
+    if (!isMissingCountColumnError(res.error)) return res;
+    missingCountColumn = false;
+  }
+  const rest = { ...fields };
+  delete rest.missing_count;
+  return op(rest);
+}
+
 const num = (v: string) => (v === '' ? 0 : Number(v));
 
 // One in-flight "create revision 1" per job, so a double render/effect can't insert twice.
@@ -61,10 +76,10 @@ async function ensureFirstDraft(jobId: string, d: EstimateData) {
   if (!p) {
     p = (async () => {
       const t = computeTotals(d);
-      const { error } = await supabase.from('estimates').insert({
+      const { error } = await tolerant({
         job_id: jobId, revision: 1, status: 'draft', data: d,
-        material_total: t.materialTotal, labor_total: t.laborTotal, target_gp: d.targetGp, price: t.price,
-      });
+        material_total: t.materialTotal, labor_total: t.laborTotal, target_gp: d.targetGp, price: t.price, missing_count: t.missingCount,
+      }, (f) => supabase.from('estimates').insert(f));
       // 23505 = revision 1 already exists (created on another phone / tab) — just reload it.
       if (error && error.code !== '23505') throw error;
       if (!error) await logEvent(jobId, 'estimate_created', `Draft rev 1 created — ${money(t.price)}`);
@@ -254,18 +269,18 @@ export default function Estimate({ jobId }: { jobId: string }) {
 
   const dbFields = (d: EstimateData) => {
     const t = computeTotals(d);
-    return { data: d, roof_type: roofTypeOf(d), material_total: t.materialTotal, labor_total: t.laborTotal, target_gp: d.targetGp, price: t.price };
+    return { data: d, roof_type: roofTypeOf(d), material_total: t.materialTotal, labor_total: t.laborTotal, target_gp: d.targetGp, price: t.price, missing_count: t.missingCount };
   };
 
   async function persist(): Promise<EstimateRow | null> {
     if (!data || !job) return null;
     let row: EstimateRow;
     if (current) {
-      const { data: r, error } = await supabase.from('estimates').update(dbFields(data)).eq('id', current.id).select('*').single();
+      const { data: r, error } = await tolerant(dbFields(data), (f) => supabase.from('estimates').update(f).eq('id', current.id).select('*').single());
       if (error) throw error;
       row = r as EstimateRow;
     } else {
-      const { data: r, error } = await supabase.from('estimates').insert({ job_id: jobId, revision: 1, status: 'draft', ...dbFields(data) }).select('*').single();
+      const { data: r, error } = await tolerant({ job_id: jobId, revision: 1, status: 'draft', ...dbFields(data) }, (f) => supabase.from('estimates').insert(f).select('*').single());
       if (error) throw error;
       row = r as EstimateRow;
     }
@@ -285,7 +300,9 @@ export default function Estimate({ jobId }: { jobId: string }) {
       const out = await fn();
       if (out) setMsg(out);
     } catch (e) {
-      setErr(`${label}: ${(e as Error).message}`);
+      setErr(isMissingItemsRefusal(e as Error)
+        ? `${label}: the database refused — this estimate still has items missing from the report. Enter the missing lengths (or 0 / "no valleys"), save, then approve.`
+        : `${label}: ${(e as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -305,7 +322,7 @@ export default function Estimate({ jobId }: { jobId: string }) {
       if (dirty && current?.status === 'draft' && confirm('Save changes to this revision first?')) await persist();
       const next = Math.max(0, ...rows.map((r) => r.revision)) + 1;
       const copy: EstimateData = JSON.parse(JSON.stringify(data));
-      const { data: r, error } = await supabase.from('estimates').insert({ job_id: jobId, revision: next, status: 'draft', ...dbFields(copy) }).select('*').single();
+      const { data: r, error } = await tolerant({ job_id: jobId, revision: next, status: 'draft', ...dbFields(copy) }, (f) => supabase.from('estimates').insert(f).select('*').single());
       if (error) throw error;
       await logEvent(jobId, 'estimate_revision', `Rev ${next} created`);
       await load((r as EstimateRow).id);
