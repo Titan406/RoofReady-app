@@ -1,4 +1,4 @@
-import { MISSING_NOTE, REPORT_LENGTH_FIELDS, ROOF_TYPES, computeTotals, lineMissing, lineQty, lineTotal, roofTypeLabel, roofTypeOf, type EstimateData } from './estimate';
+import { MISSING_NOTE, PLACEHOLDER_TAG, missingBanner, type Line, REPORT_LENGTH_FIELDS, ROOF_TYPES, computeTotals, lineMissing, lineQty, lineTotal, roofTypeLabel, roofTypeOf, type EstimateData } from './estimate';
 import { money } from './stages';
 import { companyLines, defaultTemplate, fillPlaceholders, formatDate, shortId, type FillValues, type OrderTemplate } from './templates';
 
@@ -40,6 +40,7 @@ function wrap(tpl: OrderTemplate, ctx: OrderContext, body: string[]): string {
   return out.join('\n');
 }
 
+const nm = (l: Line) => (l.placeholder ? `${l.name} (${PLACEHOLDER_TAG})` : l.name);
 const fmtQty = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2));
 
 export function workOrderText(e: EstimateData, ctx: OrderContext, includePrices: boolean, tpl: OrderTemplate = defaultTemplate('work_order')): string {
@@ -51,12 +52,13 @@ export function workOrderText(e: EstimateData, ctx: OrderContext, includePrices:
   lines.push(`ROOF TYPE: ${roofTypeLabel(rt)}`);
   const rtNote = ROOF_TYPES.find((x) => x.id === rt)?.note;
   if (rtNote) lines.push(`NOTE: ${rtNote}`);
+  if (t.missingCount) lines.push(missingBanner(t.missingCount));
   lines.push('');
   lines.push('ROOF');
   lines.push(`- ${t.drivers.squares} squares (area ${m.area} sq ft + ${m.waste}% waste)`);
   lines.push(`- Steep pitch share: ${m.steepShare}% (${t.drivers.steepSquares} SQ)`);
   lines.push(
-    `- Starter ${m.starter} LF · Ridge cap ${m.ridgeCap} LF · Drip edge ${m.dripEdge} LF · Valley ${m.valley} LF`,
+    `- Starter ${m.starter} LF · Ridge cap ${m.ridgeCap} LF · Drip edge ${m.dripEdge} LF · Valley ${m.valley} LF${m.noValleys ? ' (no valleys)' : ''}`,
   );
   lines.push(
     `- Leak barrier ${m.leakBarrierLF} LF @ ${m.leakBarrierWidth} ft · Step flashing ${m.stepFlashing} LF · Flashing ${m.flashing} LF`,
@@ -70,7 +72,7 @@ export function workOrderText(e: EstimateData, ctx: OrderContext, includePrices:
     const q = lineQty(l, t.drivers);
     if (q === 0) continue;
     lines.push(
-      `- ${l.name}: ${fmtQty(q)} ${l.unit}` + (includePrices ? ` @ ${money(l.price)} = ${money(lineTotal(l, t.drivers))}` : ''),
+      `- ${nm(l)}: ${fmtQty(q)} ${l.unit}` + (includePrices ? ` @ ${money(l.price)} = ${money(lineTotal(l, t.drivers))}` : ''),
     );
   }
   if (includePrices) lines.push(`Labor total: ${money(t.laborTotal)}`);
@@ -78,9 +80,9 @@ export function workOrderText(e: EstimateData, ctx: OrderContext, includePrices:
   lines.push('MATERIALS ON SITE');
   for (const l of e.materials) {
     const q = lineQty(l, t.drivers);
-    if (lineMissing(l, t.drivers)) { lines.push(`- ${l.name}: ?? ${l.unit} — ${MISSING_NOTE}`); continue; }
+    if (lineMissing(l, t.drivers)) { lines.push(`- ${nm(l)}: ?? ${l.unit} — ${MISSING_NOTE}`); continue; }
     if (q === 0) continue;
-    lines.push(`- ${l.name}: ${fmtQty(q)} ${l.unit}`);
+    lines.push(`- ${nm(l)}: ${fmtQty(q)} ${l.unit}`);
   }
   return wrap(tpl, ctx, lines);
 }
@@ -88,14 +90,16 @@ export function workOrderText(e: EstimateData, ctx: OrderContext, includePrices:
 export function materialOrderText(e: EstimateData, ctx: OrderContext, includePrices: boolean, tpl: OrderTemplate = defaultTemplate('material_order')): string {
   const t = computeTotals(e);
   const lines: string[] = [];
-  lines.push(`ROOF TYPE: ${roofTypeLabel(roofTypeOf(e))}`, '');
+  lines.push(`ROOF TYPE: ${roofTypeLabel(roofTypeOf(e))}`);
+  if (t.missingCount) lines.push(missingBanner(t.missingCount));
+  lines.push('');
   lines.push('ITEMS');
   for (const l of e.materials) {
     const q = lineQty(l, t.drivers);
-    if (lineMissing(l, t.drivers)) { lines.push(`- ?? ${l.unit} — ${l.name} — ${MISSING_NOTE}`); continue; }
+    if (lineMissing(l, t.drivers)) { lines.push(`- ?? ${l.unit} — ${nm(l)} — ${MISSING_NOTE}`); continue; }
     if (q === 0) continue;
     lines.push(
-      `- ${fmtQty(q)} ${l.unit} — ${l.name}` + (includePrices ? ` @ ${money(l.price)} = ${money(lineTotal(l, t.drivers))}` : ''),
+      `- ${fmtQty(q)} ${l.unit} — ${nm(l)}` + (includePrices ? ` @ ${money(l.price)} = ${money(lineTotal(l, t.drivers))}` : ''),
     );
   }
   if (includePrices) {

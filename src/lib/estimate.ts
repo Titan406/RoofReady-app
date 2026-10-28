@@ -17,6 +17,8 @@ export interface Measurements {
   hips?: number; // hip LF
   eaves?: number; // eave LF
   rakes?: number; // rake LF
+  /** User explicitly stated the roof has no valleys (valley 0 is then a real 0, not "missing"). */
+  noValleys?: boolean;
 }
 
 export type ReportLengthKey = 'ridges' | 'hips' | 'eaves' | 'rakes';
@@ -28,7 +30,8 @@ export const REPORT_LENGTH_FIELDS: { key: ReportLengthKey; label: string; unit: 
   { key: 'rakes', label: 'Rakes (report)', unit: 'LF' },
 ];
 
-export const MEASUREMENT_FIELDS: { key: keyof Measurements; label: string; unit: string }[] = [
+export type NumericMeasurementKey = Exclude<keyof Measurements, 'noValleys' | ReportLengthKey>;
+export const MEASUREMENT_FIELDS: { key: NumericMeasurementKey; label: string; unit: string }[] = [
   { key: 'area', label: 'Roof area', unit: 'sq ft' },
   { key: 'waste', label: 'Waste', unit: '%' },
   { key: 'steepShare', label: 'Steep pitch share', unit: '%' },
@@ -72,6 +75,7 @@ export function normalizeMeasurements(raw: unknown): Measurements {
       if (Number.isFinite(n) && n >= 0) out[f.key] = n;
     }
   }
+  if (r.noValleys === true) out.noValleys = true;
   return out;
 }
 
@@ -149,7 +153,8 @@ const has = (v: number | undefined): v is number => v !== undefined && v !== nul
 const sumOrNaN = (...vs: (number | undefined)[]) => (vs.every(has) ? vs.reduce<number>((a, b) => a + (b as number), 0) : NaN);
 
 function lengthDrivers(m: Measurements) {
-  const valley = m.valley > 0 ? m.valley : NaN; // 0 = not in report (or no valleys) -> flagged, never guessed
+  // 0 = not in report -> flagged, never guessed — unless the user explicitly said "no valleys".
+  const valley = m.valley > 0 ? m.valley : m.noValleys ? 0 : NaN;
   return {
     areaWithWaste: round2(m.area * (1 + m.waste / 100)),
     ridgesLF: sumOrNaN(m.ridges),
@@ -191,6 +196,8 @@ export interface Line {
   custom?: boolean;
   /** Visible, editable ASSUMPTION behind the rate (e.g. panel coverage width). */
   assumption?: string;
+  /** Price is a PLACEHOLDER, not a supplier quote (shown as a tag, not part of the name). */
+  placeholder?: boolean;
 }
 
 export function lineQty(line: Line, d: Drivers): number {
@@ -309,9 +316,15 @@ export const roofTypeLabel = (id: RoofTypeId | undefined) => ROOF_TYPES.find((t)
 /** price_catalog row id holding team defaults for a roof type (shingles keep the original 'default' row). */
 export const catalogIdFor = (id: RoofTypeId) => (id === 'asphalt_shingle' ? 'default' : `roof:${id}`);
 
-const PH = ' (PLACEHOLDER price)';
+export const PLACEHOLDER_TAG = 'PLACEHOLDER price';
+/** Exact standing-seam coverage: 16 in = 4/3 ft. */
+export const SEAM_16IN_FT = 4 / 3;
+/** Allow-list a stored roof type; anything unknown falls back to asphalt shingles. */
+export function parseRoofType(v: unknown): RoofTypeId {
+  return ROOF_TYPES.some((t) => t.id === v) ? (v as RoofTypeId) : 'asphalt_shingle';
+}
 function mk(name: string, unit: string, driver: DriverKey, mode: LineMode, rate: number, price: number, assumption?: string): Line {
-  const l: Line = { id: newId(), name, unit, driver, mode, rate, price, override: null };
+  const l: Line = { id: newId(), name, unit, driver, mode, rate, price, override: null, placeholder: true };
   if (assumption) l.assumption = assumption;
   return l;
 }
@@ -319,69 +332,69 @@ function mk(name: string, unit: string, driver: DriverKey, mode: LineMode, rate:
 // All prices below are PLACEHOLDERS, not supplier quotes. Every rate is an editable ASSUMPTION.
 function tuffRibMaterials(): Line[] {
   return [
-    mk('Tuff Rib panels, 3 ft coverage' + PH, 'LF', 'areaWithWaste', 'coverage', 3, 3.25, 'ASSUMPTION: 36 in (3 ft) coverage width per panel → panel LF = area incl. waste ÷ 3. Edit the coverage if your panel differs.'),
-    mk('Ridge / hip cap (10 ft)' + PH, 'piece', 'ridgesPlusHips', 'coverage', 10, 28, 'ASSUMPTION: 10 ft net per piece after laps.'),
-    mk('Eave / drip trim (10 ft)' + PH, 'piece', 'eavesLF', 'coverage', 10, 14),
-    mk('Rake / gable trim (10 ft)' + PH, 'piece', 'rakesLF', 'coverage', 10, 22),
-    mk('Valley trim / flashing (10 ft)' + PH, 'piece', 'valleyLF', 'coverage', 10, 35),
-    mk('Synthetic underlayment' + PH, 'roll', 'squares', 'coverage', 10, 165, 'ASSUMPTION: 10 squares per roll.'),
-    mk('Screws with washers (bag of 250)' + PH, 'bag', 'squares', 'coverage', 3, 45, 'ASSUMPTION: ~80 screws per square → 1 bag per 3 squares.'),
-    mk('Inside foam closures (3 ft) at eaves' + PH, 'piece', 'eavesLF', 'coverage', 3, 2.5, 'ASSUMPTION: 3 ft per closure strip.'),
-    mk('Outside foam closures (3 ft) at ridge/hip' + PH, 'piece', 'ridgesPlusHips', 'coverage', 1.5, 2.5, 'ASSUMPTION: both sides of ridge/hip → 1 strip per 1.5 ft.'),
-    mk('Sealant (tube)' + PH, 'tube', 'squares', 'coverage', 5, 9, 'ASSUMPTION: 1 tube per 5 squares.'),
-    mk('Butyl tape (roll)' + PH, 'roll', 'none', 'fixed', 4, 18, 'ASSUMPTION: 4 rolls — edit per job.'),
-    mk('Pipe boots (metal roof)' + PH, 'each', 'none', 'fixed', 3, 22, 'ASSUMPTION: 3 boots — count on site / from report.'),
+    mk('Tuff Rib panels, 3 ft coverage', 'LF', 'areaWithWaste', 'coverage', 3, 3.25, 'ASSUMPTION: 36 in (3 ft) coverage width per panel → panel LF = area incl. waste ÷ 3. Edit the coverage if your panel differs.'),
+    mk('Ridge / hip cap (10 ft)', 'piece', 'ridgesPlusHips', 'coverage', 10, 28, 'ASSUMPTION: 10 ft net per piece after laps.'),
+    mk('Eave / drip trim (10 ft)', 'piece', 'eavesLF', 'coverage', 10, 14),
+    mk('Rake / gable trim (10 ft)', 'piece', 'rakesLF', 'coverage', 10, 22),
+    mk('Valley trim / flashing (10 ft)', 'piece', 'valleyLF', 'coverage', 10, 35),
+    mk('Synthetic underlayment', 'roll', 'squares', 'coverage', 10, 165, 'ASSUMPTION: 10 squares per roll.'),
+    mk('Screws with washers (bag of 250)', 'bag', 'squares', 'coverage', 3, 45, 'ASSUMPTION: ~80 screws per square → 1 bag per 3 squares.'),
+    mk('Inside foam closures (3 ft) at eaves', 'piece', 'eavesLF', 'coverage', 3, 2.5, 'ASSUMPTION: 3 ft per closure strip.'),
+    mk('Outside foam closures (3 ft) at ridge/hip', 'piece', 'ridgesPlusHips', 'coverage', 1.5, 2.5, 'ASSUMPTION: both sides of ridge/hip → 1 strip per 1.5 ft.'),
+    mk('Sealant (tube)', 'tube', 'squares', 'coverage', 5, 9, 'ASSUMPTION: 1 tube per 5 squares.'),
+    mk('Butyl tape (roll)', 'roll', 'none', 'fixed', 4, 18, 'ASSUMPTION: 4 rolls — edit per job.'),
+    mk('Pipe boots (metal roof)', 'each', 'none', 'fixed', 3, 22, 'ASSUMPTION: 3 boots — count on site / from report.'),
   ];
 }
 
 function standingSeamMaterials(mech: boolean): Line[] {
   const kind = mech ? 'Mechanical-lock' : 'Snap-Lock';
   const lines = [
-    mk(`${kind} standing seam panels, 16 in coverage` + PH, 'LF', 'areaWithWaste', 'coverage', 1.333, mech ? 6.5 : 5.5, 'ASSUMPTION: 16 in (1.333 ft) coverage width per panel → panel LF = area incl. waste ÷ 1.333. Edit for 12/18 in panels.'),
-    mk('Panel clips' + PH, 'each', 'areaWithWaste', 'coverage', 2.67, 0.85, 'ASSUMPTION: 1 clip per 2.67 sq ft (16 in seam spacing × clips every 24 in).'),
-    mk('Clip fasteners (box of 250)' + PH, 'box', 'areaWithWaste', 'coverage', 333, 40, 'ASSUMPTION: 2 screws per clip → 1 box per ~333 sq ft.'),
-    mk('Ridge / hip cap (10 ft)' + PH, 'piece', 'ridgesPlusHips', 'coverage', 10, 38, 'ASSUMPTION: 10 ft net per piece after laps.'),
-    mk('Eave / drip trim (10 ft)' + PH, 'piece', 'eavesLF', 'coverage', 10, 18),
-    mk('Rake / gable trim (10 ft)' + PH, 'piece', 'rakesLF', 'coverage', 10, 26),
-    mk('Valley flashing (10 ft)' + PH, 'piece', 'valleyLF', 'coverage', 10, 42),
-    mk('High-temp synthetic underlayment' + PH, 'roll', 'squares', 'coverage', 2, 155, 'ASSUMPTION: 2 squares per roll (high-temp). Use regular synthetic by editing.'),
-    mk('Ice & water at eaves + valleys' + PH, 'roll', 'eavesValleySqft', 'coverage', 200, 119, 'ASSUMPTION: 200 sq ft per roll; strip width = Leak barrier strip width.'),
-    mk('Z-closures / seam closures at ridge (10 ft)' + PH, 'piece', 'ridgesPlusHips', 'coverage', 5, 12, 'ASSUMPTION: both sides of ridge/hip → 1 piece per 5 ft.'),
-    mk('Pop rivets / trim fasteners (box)' + PH, 'box', 'squares', 'coverage', 15, 25, 'ASSUMPTION: 1 box per 15 squares.'),
-    mk('Sealant (tube)' + PH, 'tube', 'squares', 'coverage', 5, 9, 'ASSUMPTION: 1 tube per 5 squares.'),
-    mk('Butyl tape (roll)' + PH, 'roll', 'none', 'fixed', 4, 18, 'ASSUMPTION: 4 rolls — edit per job.'),
-    mk('Pipe boots (metal roof)' + PH, 'each', 'none', 'fixed', 3, 22, 'ASSUMPTION: 3 boots — count on site / from report.'),
+    mk(`${kind} standing seam panels, 16 in coverage`, 'LF', 'areaWithWaste', 'coverage', SEAM_16IN_FT, mech ? 6.5 : 5.5, 'ASSUMPTION: 16 in (4/3 ft) coverage width per panel → panel LF = area incl. waste × 3 ÷ 4. Edit for 12/18 in panels.'),
+    mk('Panel clips', 'each', 'areaWithWaste', 'coverage', 2.67, 0.85, 'ASSUMPTION: 1 clip per 2.67 sq ft (16 in seam spacing × clips every 24 in).'),
+    mk('Clip fasteners (box of 250)', 'box', 'areaWithWaste', 'coverage', 333, 40, 'ASSUMPTION: 2 screws per clip → 1 box per ~333 sq ft.'),
+    mk('Ridge / hip cap (10 ft)', 'piece', 'ridgesPlusHips', 'coverage', 10, 38, 'ASSUMPTION: 10 ft net per piece after laps.'),
+    mk('Eave / drip trim (10 ft)', 'piece', 'eavesLF', 'coverage', 10, 18),
+    mk('Rake / gable trim (10 ft)', 'piece', 'rakesLF', 'coverage', 10, 26),
+    mk('Valley flashing (10 ft)', 'piece', 'valleyLF', 'coverage', 10, 42),
+    mk('High-temp synthetic underlayment', 'roll', 'squares', 'coverage', 2, 155, 'ASSUMPTION: 2 squares per roll (high-temp). Use regular synthetic by editing.'),
+    mk('Ice & water at eaves + valleys', 'roll', 'eavesValleySqft', 'coverage', 200, 119, 'ASSUMPTION: 200 sq ft per roll; strip width = Leak barrier strip width.'),
+    mk('Z-closures / seam closures at ridge (10 ft)', 'piece', 'ridgesPlusHips', 'coverage', 5, 12, 'ASSUMPTION: both sides of ridge/hip → 1 piece per 5 ft.'),
+    mk('Pop rivets / trim fasteners (box)', 'box', 'squares', 'coverage', 15, 25, 'ASSUMPTION: 1 box per 15 squares.'),
+    mk('Sealant (tube)', 'tube', 'squares', 'coverage', 5, 9, 'ASSUMPTION: 1 tube per 5 squares.'),
+    mk('Butyl tape (roll)', 'roll', 'none', 'fixed', 4, 18, 'ASSUMPTION: 4 rolls — edit per job.'),
+    mk('Pipe boots (metal roof)', 'each', 'none', 'fixed', 3, 22, 'ASSUMPTION: 3 boots — count on site / from report.'),
   ];
-  if (mech) lines.push(mk('Mechanical seamer rental — REQUIRED to close mechanical-lock seams' + PH, 'rental', 'none', 'fixed', 1, 250, 'NOTE: seams must be mechanically seamed; rent or use own seamer.'));
+  if (mech) lines.push(mk('Mechanical seamer rental — REQUIRED to close mechanical-lock seams', 'rental', 'none', 'fixed', 1, 250, 'NOTE: seams must be mechanically seamed; rent or use own seamer.'));
   return lines;
 }
 
 function bravaMaterials(): Line[] {
   return [
-    mk('Brava synthetic shake tiles (bundle)' + PH, 'bundle', 'squares', 'per', 4, 120, 'ASSUMPTION: 4 bundles per square at standard exposure — check Brava’s spec for your exposure and edit.'),
-    mk('Synthetic underlayment' + PH, 'roll', 'squares', 'coverage', 10, 165, 'ASSUMPTION: 10 squares per roll.'),
-    mk('Ice & water at eaves + valleys' + PH, 'roll', 'eavesValleySqft', 'coverage', 200, 119, 'ASSUMPTION: 200 sq ft per roll; strip width = Leak barrier strip width.'),
-    mk('Stainless / coil nails (box)' + PH, 'box', 'squares', 'coverage', 5, 70, 'ASSUMPTION: 1 box per 5 squares.'),
-    mk('Brava hip & ridge caps (bundle)' + PH, 'bundle', 'ridgesPlusHips', 'coverage', 20, 140, 'ASSUMPTION: 20 LF per bundle.'),
-    mk('Brava starter (bundle)' + PH, 'bundle', 'eavesLF', 'coverage', 30, 95, 'ASSUMPTION: 30 LF per bundle.'),
-    mk('Valley metal (10 ft)' + PH, 'piece', 'valleyLF', 'coverage', 10, 28),
-    mk('Drip edge (10 ft), eaves + rakes' + PH, 'piece', 'eavesPlusRakes', 'coverage', 10, 12),
-    mk('Sealant (tube)' + PH, 'tube', 'squares', 'coverage', 5, 9, 'ASSUMPTION: 1 tube per 5 squares.'),
-    mk('Pipe boots' + PH, 'each', 'none', 'fixed', 3, 18, 'ASSUMPTION: 3 boots — count on site / from report.'),
+    mk('Brava synthetic shake tiles (bundle)', 'bundle', 'squares', 'per', 4, 120, 'ASSUMPTION: 4 bundles per square at standard exposure — check Brava’s spec for your exposure and edit.'),
+    mk('Synthetic underlayment', 'roll', 'squares', 'coverage', 10, 165, 'ASSUMPTION: 10 squares per roll.'),
+    mk('Ice & water at eaves + valleys', 'roll', 'eavesValleySqft', 'coverage', 200, 119, 'ASSUMPTION: 200 sq ft per roll; strip width = Leak barrier strip width.'),
+    mk('Stainless / coil nails (box)', 'box', 'squares', 'coverage', 5, 70, 'ASSUMPTION: 1 box per 5 squares.'),
+    mk('Brava hip & ridge caps (bundle)', 'bundle', 'ridgesPlusHips', 'coverage', 20, 140, 'ASSUMPTION: 20 LF per bundle.'),
+    mk('Brava starter (bundle)', 'bundle', 'eavesLF', 'coverage', 30, 95, 'ASSUMPTION: 30 LF per bundle.'),
+    mk('Valley metal (10 ft)', 'piece', 'valleyLF', 'coverage', 10, 28),
+    mk('Drip edge (10 ft), eaves + rakes', 'piece', 'eavesPlusRakes', 'coverage', 10, 12),
+    mk('Sealant (tube)', 'tube', 'squares', 'coverage', 5, 9, 'ASSUMPTION: 1 tube per 5 squares.'),
+    mk('Pipe boots', 'each', 'none', 'fixed', 3, 18, 'ASSUMPTION: 3 boots — count on site / from report.'),
   ];
 }
 
 function typeLabor(install: string, installRate: number, extra: Line[] = []): Line[] {
   return [
-    mk('Tear-off' + PH, 'SQ', 'squares', 'per', 1, 45),
-    mk('Underlayment' + PH, 'SQ', 'squares', 'per', 1, 20),
-    mk(install + PH, 'SQ', 'squares', 'per', 1, installRate),
-    mk('Steep pitch surcharge' + PH, 'SQ', 'steepSquares', 'per', 1, 30),
-    mk('Eave + rake trim install' + PH, 'LF', 'eavesPlusRakes', 'per', 1, 3),
-    mk('Ridge / hip cap install' + PH, 'LF', 'ridgesPlusHips', 'per', 1, 5),
-    mk('Valley install' + PH, 'LF', 'valleyLF', 'per', 1, 6),
+    mk('Tear-off', 'SQ', 'squares', 'per', 1, 45),
+    mk('Underlayment', 'SQ', 'squares', 'per', 1, 20),
+    mk(install, 'SQ', 'squares', 'per', 1, installRate),
+    mk('Steep pitch surcharge', 'SQ', 'steepSquares', 'per', 1, 30),
+    mk('Eave + rake trim install', 'LF', 'eavesPlusRakes', 'per', 1, 3),
+    mk('Ridge / hip cap install', 'LF', 'ridgesPlusHips', 'per', 1, 5),
+    mk('Valley install', 'LF', 'valleyLF', 'per', 1, 6),
     ...extra,
-    mk('Dumpster / disposal' + PH, 'each', 'none', 'fixed', 1, 450),
+    mk('Dumpster / disposal', 'each', 'none', 'fixed', 1, 450),
   ];
 }
 
@@ -399,7 +412,7 @@ export function defaultLaborFor(t: RoofTypeId): Line[] {
   switch (t) {
     case 'tuff_rib': return typeLabor('Tuff Rib panel install', 180);
     case 'snap_lock': return typeLabor('Snap-Lock panel install', 300);
-    case 'mech_lock': return typeLabor('Mechanical-lock panel install', 330, [mk('Mechanical seaming' + PH, 'SQ', 'squares', 'per', 1, 40)]);
+    case 'mech_lock': return typeLabor('Mechanical-lock panel install', 330, [mk('Mechanical seaming', 'SQ', 'squares', 'per', 1, 40)]);
     case 'brava': return typeLabor('Brava shake install', 275);
     default: return defaultLabor();
   }
@@ -427,6 +440,8 @@ export interface Totals {
   directCost: number;
   price: number;
   grossProfit: number;
+  /** Lines whose quantity depends on a report length that is missing — price is incomplete while > 0. */
+  missingCount: number;
   gpPct: number; // resulting GP %
   valid: boolean;
 }
@@ -444,5 +459,16 @@ export function computeTotals(e: EstimateData): Totals {
   const price = valid ? round2(directCost / (1 - gp)) : 0;
   const grossProfit = round2(price - directCost);
   const gpPct = price > 0 ? round2((grossProfit / price) * 100) : 0;
-  return { drivers, materialSubtotal, tax, materialTotal, laborTotal, directCost, price, grossProfit, gpPct, valid };
+  const missingCount = [...e.materials, ...e.labor].filter((l) => lineMissing(l, drivers)).length;
+  return { missingCount, drivers, materialSubtotal, tax, materialTotal, laborTotal, directCost, price, grossProfit, gpPct, valid };
 }
+
+/** Banner text shown on totals, orders and print view when lengths are missing. */
+export const missingBanner = (n: number) =>
+  `⚠ ${n} item${n === 1 ? '' : 's'} missing from the report — price incomplete. Enter the lengths (or 0 / "no valleys" if there are none) before approving.`;
+
+/** Same rule as Measurements.tsx: a length must be a finite number ≥ 0. Returns null when invalid. */
+export const parseLength = (v: string): number | null => {
+  const n = Number(v);
+  return v.trim() === '' || !Number.isFinite(n) || n < 0 ? null : n;
+};

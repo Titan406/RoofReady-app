@@ -8,6 +8,10 @@ import {
   ROOF_TYPES,
   catalogIdFor,
   lineMissing,
+  missingBanner,
+  parseRoofType,
+  parseLength,
+  PLACEHOLDER_TAG,
   roofTypeOf,
   switchRoofType,
   type RoofTypeId,
@@ -22,7 +26,7 @@ import {
   type EstimateData,
   type Line,
   type LineMode,
-  type Measurements,
+  type NumericMeasurementKey,
 } from '../lib/estimate';
 import { money, money0 } from '../lib/stages';
 import { go } from '../lib/nav';
@@ -44,7 +48,7 @@ function hydrate(raw: unknown, job: Job, catalogs: Catalogs): EstimateData {
     taxPct: Number(r.taxPct) || 0,
     targetGp: r.targetGp === undefined ? 30 : Number(r.targetGp),
     notes: r.notes ?? '',
-    ...(r.roofType && r.roofType !== 'asphalt_shingle' ? { roofType: r.roofType } : {}),
+    ...(parseRoofType(r.roofType) !== 'asphalt_shingle' ? { roofType: parseRoofType(r.roofType) } : {}),
   };
 }
 
@@ -100,6 +104,7 @@ function LineEditor({
     <div className="line">
       <div className="row gap">
         <input className="grow name" value={line.name} disabled={readOnly} onChange={(e) => up({ name: e.target.value })} />
+        {line.placeholder && <span className="tag placeholder small">{PLACEHOLDER_TAG}</span>}
         {!readOnly && <button className="btn small ghost" onClick={onRemove} aria-label="Remove line">✕</button>}
       </div>
       <div className="row gap">
@@ -223,7 +228,13 @@ export default function Estimate({ jobId }: { jobId: string }) {
     setDirty(true);
     setMsg('');
   };
-  const setM = (k: keyof Measurements, v: string) => update({ measurements: { ...data.measurements, [k]: num(v) } });
+  const setM = (k: NumericMeasurementKey, v: string, label = String(k)) => {
+    if (v === '') return update({ measurements: { ...data.measurements, [k]: 0 } });
+    const n = parseLength(v);
+    if (n === null) return setErr(`${label}: “${v}” is not a valid number.`);
+    setErr('');
+    update({ measurements: { ...data.measurements, [k]: n } });
+  };
   const setLine = (kind: 'materials' | 'labor', i: number, l: Line) => {
     const arr = [...data[kind]];
     arr[i] = l;
@@ -303,6 +314,7 @@ export default function Estimate({ jobId }: { jobId: string }) {
 
   const approve = () =>
     run('Approve failed', async () => {
+      if (totals.missingCount > 0) throw new Error(missingBanner(totals.missingCount));
       if (!confirm(`Approve this estimate at ${money(totals.price)}? Older revisions will be marked superseded and the job value set to this price.`)) return;
       const row = await persist();
       if (!row) return;
@@ -420,7 +432,7 @@ export default function Estimate({ jobId }: { jobId: string }) {
         <div className="grid2">
           {MEASUREMENT_FIELDS.map((fld) => (
             <label key={fld.key}>{fld.label} ({fld.unit})
-              <input id={`m-${fld.key}`} type="number" inputMode="decimal" value={data.measurements[fld.key]} disabled={readOnly} onChange={(e) => setM(fld.key, e.target.value)} />
+              <input id={`m-${fld.key}`} type="number" inputMode="decimal" value={data.measurements[fld.key]} disabled={readOnly} onChange={(e) => setM(fld.key, e.target.value, fld.label)} min={0} />
             </label>
           ))}
         </div>
@@ -433,16 +445,29 @@ export default function Estimate({ jobId }: { jobId: string }) {
                 placeholder="missing"
                 value={data.measurements[fld.key] ?? ''}
                 disabled={readOnly}
+                min={0}
                 onChange={(e) => {
                   const m = { ...data.measurements };
                   if (e.target.value === '') delete m[fld.key];
-                  else m[fld.key] = Number(e.target.value);
+                  else {
+                    const n = parseLength(e.target.value);
+                    if (n === null) return setErr(`${fld.label}: “${e.target.value}” is not a valid number.`);
+                    m[fld.key] = n;
+                  }
+                  setErr('');
                   update({ measurements: m });
                 }}
               />
             </label>
           ))}
         </div>
+        {roofTypeOf(data) !== 'asphalt_shingle' && (
+          <label className="row gap small">
+            <input type="checkbox" checked={!!data.measurements.noValleys} disabled={readOnly}
+              onChange={(e) => { const m = { ...data.measurements }; if (e.target.checked) m.noValleys = true; else delete m.noValleys; update({ measurements: m }); }} />
+            None — this roof has no valleys
+          </label>
+        )}
         <p className="derived">
           <b>{d.squares}</b> squares · steep {d.steepSquares} SQ · leak barrier {d.leakBarrierSqft} sq ft
         </p>
@@ -477,6 +502,7 @@ export default function Estimate({ jobId }: { jobId: string }) {
           </label>
         </div>
         <p className="muted small">Montana has no state sales tax (default 0). Price = direct cost ÷ (1 − target GP).</p>
+        {totals.missingCount > 0 && <p className="error" role="alert">{missingBanner(totals.missingCount)}</p>}
         <table className="totals">
           <tbody>
             <tr><td>Materials</td><td>{money(totals.materialSubtotal)}</td></tr>
@@ -494,7 +520,7 @@ export default function Estimate({ jobId }: { jobId: string }) {
 
       <div className="actions">
         {!readOnly && <button className="btn primary" disabled={busy} onClick={save}>{busy ? 'Working…' : dirty || !current ? 'Save estimate' : 'Saved ✓'}</button>}
-        {!readOnly && totals.valid && <button className="btn" disabled={busy} onClick={approve}>Approve</button>}
+        {!readOnly && totals.valid && <button className="btn" disabled={busy || totals.missingCount > 0} title={totals.missingCount > 0 ? 'Clear the missing items first' : undefined} onClick={approve}>Approve</button>}
         <button className="btn" disabled={busy} onClick={newRevision}>New revision</button>
         {current && <button className="btn" disabled={busy || dirty} onClick={() => go(`/job/${jobId}/orders`)}>Orders</button>}
       </div>

@@ -50,9 +50,9 @@ describe('Tuff Rib', () => {
 
 describe('standing seam', () => {
   const d = computeDrivers(full);
-  it('Snap-Lock panels LF = ceil(2959.47/1.333) = 2221, clips = ceil(2959.47/2.67) = 1109', () => {
+  it('Snap-Lock panels LF = ceil(2959.47/(4/3)) = 2220, clips = ceil(2959.47/2.67) = 1109', () => {
     const m = defaultMaterialsFor('snap_lock');
-    expect(lineQty(find(m, 'panels'), d)).toBe(2221);
+    expect(lineQty(find(m, 'panels'), d)).toBe(2220);
     expect(lineQty(find(m, 'clips'), d)).toBe(1109);
     expect(lineQty(find(m, 'High-temp'), d)).toBe(15);
     // ice & water: (200 + 41) × 3 = 723 sq ft -> 4 rolls
@@ -125,5 +125,56 @@ describe('shingles unchanged', () => {
   it('price = direct cost ÷ (1 − GP) for metal too', () => {
     const t = computeTotals(newEstimateData(full, '', undefined, 'snap_lock'));
     expect(t.price).toBeCloseTo(t.directCost / 0.7, 1);
+  });
+});
+
+import { computeTotals as ct, missingBanner, parseLength, parseRoofType, SEAM_16IN_FT } from './estimate';
+describe('QC review fixes', () => {
+  it('negative / non-number lengths are rejected', () => {
+    expect(parseLength('-50')).toBeNull();
+    expect(parseLength('abc')).toBeNull();
+    expect(parseLength('')).toBeNull();
+    expect(parseLength('0')).toBe(0);
+    expect(parseLength('12.5')).toBe(12.5);
+    expect(normalizeMeasurements({ eaves: -50 }).eaves).toBeUndefined();
+  });
+  it('unknown roofType falls back to shingles', () => {
+    expect(parseRoofType('slate')).toBe('asphalt_shingle');
+    expect(parseRoofType(undefined)).toBe('asphalt_shingle');
+    expect(parseRoofType('tuff_rib')).toBe('tuff_rib');
+  });
+  it('missing items are counted; shingles have none', () => {
+    const tr = newEstimateData(base, '', undefined, 'tuff_rib');
+    const t = ct(tr);
+    expect(t.missingCount).toBeGreaterThan(0);
+    expect(missingBanner(t.missingCount)).toContain(`${t.missingCount} items missing from the report`);
+    expect(ct(newEstimateData(full, '', undefined, 'tuff_rib')).missingCount).toBe(0);
+    expect(ct(newEstimateData(base)).missingCount).toBe(0);
+    const wo = workOrderText(tr, { address: 'x' }, true);
+    expect(wo).toContain('price incomplete');
+    expect(materialOrderText(tr, { address: 'x' }, true)).toContain('price incomplete');
+    expect(workOrderText(newEstimateData(base), { address: 'x' }, true)).not.toContain('price incomplete');
+  });
+  it('explicit zero lengths clear the missing flags', () => {
+    const m = { ...base, ridges: 0, hips: 0, eaves: 0, rakes: 0, valley: 0, noValleys: true };
+    expect(ct(newEstimateData(m, '', undefined, 'snap_lock')).missingCount).toBe(0);
+  });
+  it('valley 0 flags as missing unless "no valleys" is set', () => {
+    const m0 = { ...full, valley: 0 };
+    expect(Number.isNaN(computeDrivers(m0).valleyLF)).toBe(true);
+    expect(computeDrivers({ ...m0, noValleys: true }).valleyLF).toBe(0);
+    expect(normalizeMeasurements({ noValleys: true }).noValleys).toBe(true);
+  });
+  it('standing seam uses exactly 4/3 ft coverage', () => {
+    expect(SEAM_16IN_FT).toBe(4 / 3);
+    const l = find(defaultMaterialsFor('snap_lock'), 'panels');
+    expect(l.rate).toBe(4 / 3);
+    expect(lineQty(l, computeDrivers(full))).toBe(Math.ceil((2959.47 * 3) / 4)); // 2220
+  });
+  it('PLACEHOLDER is a flag, not in the name', () => {
+    const l = defaultMaterialsFor('tuff_rib')[0];
+    expect(l.placeholder).toBe(true);
+    expect(l.name).not.toContain('PLACEHOLDER');
+    expect(defaultMaterials()[0].placeholder).toBeUndefined();
   });
 });
