@@ -25,6 +25,11 @@ export interface Measurements {
   downspoutFeet?: number;
   /** User explicitly said: no downspouts on this job. */
   noDownspouts?: boolean;
+  noInsideCorners?: boolean;
+  noOutsideCorners?: boolean;
+  noMiters?: boolean;
+  /** End caps entered directly (real count = 2 per run). Blank = ASSUMPTION 1 per 20 ft of gutter. */
+  endCaps?: number;
   insideCorners?: number;
   outsideCorners?: number;
   /** Number of miters (e.g. two 3 ft miters = 2). */
@@ -43,18 +48,28 @@ export const REPORT_LENGTH_FIELDS: { key: ReportLengthKey; label: string; unit: 
   { key: 'rakes', label: 'Rakes (report)', unit: 'LF' },
 ];
 
-export type GutterInputKey = 'gutterFeet' | 'downspoutFeet' | 'insideCorners' | 'outsideCorners' | 'miters' | 'chainFeet' | 'guardFeet';
+export type GutterInputKey = 'gutterFeet' | 'downspoutFeet' | 'insideCorners' | 'outsideCorners' | 'miters' | 'endCaps' | 'chainFeet' | 'guardFeet';
 export const GUTTER_FIELDS: { key: GutterInputKey; label: string; unit: string }[] = [
   { key: 'gutterFeet', label: 'Gutter', unit: 'ft' },
   { key: 'downspoutFeet', label: 'Downspouts', unit: 'ft' },
   { key: 'insideCorners', label: 'Inside corners', unit: 'count' },
   { key: 'outsideCorners', label: 'Outside corners', unit: 'count' },
   { key: 'miters', label: 'Miters', unit: 'count' },
+  { key: 'endCaps', label: 'End caps', unit: 'count' },
   { key: 'chainFeet', label: 'Rain chain', unit: 'ft' },
   { key: 'guardFeet', label: 'Gutter guard / leaf screen', unit: 'ft' },
 ];
 
-export type NumericMeasurementKey = Exclude<keyof Measurements, 'noValleys' | 'noDownspouts' | ReportLengthKey | GutterInputKey>;
+/** Gutter inputs with an explicit "none" checkbox. Rule: blank = MISSING (flagged); typed 0 or "none" ticked = none. */
+export const GUTTER_NONE: { key: GutterInputKey; flag: GutterNoneFlag; label: string }[] = [
+  { key: 'downspoutFeet', flag: 'noDownspouts', label: 'None — no downspouts' },
+  { key: 'insideCorners', flag: 'noInsideCorners', label: 'None — no inside corners' },
+  { key: 'outsideCorners', flag: 'noOutsideCorners', label: 'None — no outside corners' },
+  { key: 'miters', flag: 'noMiters', label: 'None — no miters' },
+];
+export type GutterNoneFlag = 'noDownspouts' | 'noInsideCorners' | 'noOutsideCorners' | 'noMiters';
+
+export type NumericMeasurementKey = Exclude<keyof Measurements, 'noValleys' | GutterNoneFlag | ReportLengthKey | GutterInputKey>;
 export const MEASUREMENT_FIELDS: { key: NumericMeasurementKey; label: string; unit: string }[] = [
   { key: 'area', label: 'Roof area', unit: 'sq ft' },
   { key: 'waste', label: 'Waste', unit: '%' },
@@ -107,7 +122,7 @@ export function normalizeMeasurements(raw: unknown): Measurements {
     }
   }
   if (r.noValleys === true) out.noValleys = true;
-  if (r.noDownspouts === true) out.noDownspouts = true;
+  for (const g of GUTTER_NONE) if (r[g.flag] === true) out[g.flag] = true;
   return out;
 }
 
@@ -143,6 +158,7 @@ export type DriverKey =
   | 'insideCorners'
   | 'outsideCorners'
   | 'miters'
+  | 'endCaps'
   | 'chainLF'
   | 'guardLF'
   | 'none';
@@ -171,6 +187,7 @@ export const DRIVER_LABELS: Record<DriverKey, string> = {
   insideCorners: 'Inside corners',
   outsideCorners: 'Outside corners',
   miters: 'Miters',
+  endCaps: 'End caps (entered, else 1 per 20 ft)',
   chainLF: 'Rain chain ft',
   guardLF: 'Gutter guard ft',
   none: 'Fixed quantity',
@@ -215,6 +232,8 @@ function lengthDrivers(m: Measurements) {
   };
 }
 
+/** ASSUMPTION used only when no end-cap count is entered: 1 end cap per 20 ft of gutter. */
+export const END_CAP_FT = 20;
 /** Gutter feet: entered value, else the report's eave length. Missing or 0 -> NaN (flagged, never guessed). */
 export function gutterFeetOf(m: Measurements): number {
   const v = m.gutterFeet !== undefined ? m.gutterFeet : m.eaves;
@@ -222,12 +241,16 @@ export function gutterFeetOf(m: Measurements): number {
 }
 function gutterDrivers(m: Measurements) {
   const n = (v: number | undefined) => (has(v) ? v : 0);
+  // Blank = missing (NaN, flagged); explicit "none" or a typed 0 = none.
+  const req = (none: boolean | undefined, v: number | undefined) => (none ? 0 : has(v) ? v : NaN);
+  const g = gutterFeetOf(m);
   return {
-    gutterLF: gutterFeetOf(m),
-    downspoutLF: m.noDownspouts ? 0 : has(m.downspoutFeet) ? m.downspoutFeet : NaN,
-    insideCorners: n(m.insideCorners),
-    outsideCorners: n(m.outsideCorners),
-    miters: n(m.miters),
+    gutterLF: g,
+    downspoutLF: req(m.noDownspouts, m.downspoutFeet),
+    insideCorners: req(m.noInsideCorners, m.insideCorners),
+    outsideCorners: req(m.noOutsideCorners, m.outsideCorners),
+    miters: req(m.noMiters, m.miters),
+    endCaps: has(m.endCaps) ? m.endCaps : Number.isNaN(g) ? NaN : ceilSafe(g / END_CAP_FT),
     chainLF: n(m.chainFeet),
     guardLF: n(m.guardFeet),
   };
@@ -386,6 +409,8 @@ export const DB_PENDING_TYPES: RoofTypeId[] = ['gutter_5in', 'gutter_6in'];
 /** True when Postgres refused the save because estimates.roof_type is not in the (old) allowed list. */
 export const isRoofTypeCheckError = (e: { code?: string; message?: string } | null | undefined) =>
   !!e && (e.code === '23514' || /check constraint/i.test(e.message ?? '')) && /estimates_roof_type_check/.test(e.message ?? '');
+export const GUTTER_DEFAULTS_DISABLED =
+  'Team default prices for gutters are turned off until the gutter database update is applied.';
 export const GUTTER_DB_PENDING_MSG =
   'Gutter estimates need a database update that has not been applied yet (pending migration). You can build and review this gutter estimate, but it cannot be saved until the database change is applied. Nothing was saved.';
 export const roofTypeOf = (e: Pick<EstimateData, 'roofType'>): RoofTypeId => e.roofType ?? 'asphalt_shingle';
@@ -489,7 +514,7 @@ function gutterMaterials(t: GutterTypeId): Line[] {
     mk(`${sz} inside corner`, 'each', 'insideCorners', 'per', 1, p(14, 18)),
     mk(`${sz} outside corner`, 'each', 'outsideCorners', 'per', 1, p(14, 18)),
     mk(`${sz} miter (3 ft)`, 'each', 'miters', 'per', 1, p(22, 28)),
-    mk(`${sz} end cap`, 'each', 'gutterLF', 'coverage', 20, p(3, 4), 'ASSUMPTION: 2 end caps per ~40 ft run → 1 per 20 ft. Override with your count.'),
+    mk(`${sz} end cap`, 'each', 'endCaps', 'per', 1, p(3, 4), 'ASSUMPTION (only when End caps is blank): 1 per 20 ft of gutter. Real count is 2 per run — enter End caps in the Gutters section.'),
     mk(`${sz} hidden hanger`, 'each', 'gutterLF', 'coverage', 2, p(1.25, 1.6), 'ASSUMPTION: one hanger every 24 in (2 ft). Edit spacing (e.g. 1.5 for snow load).'),
     mk('Gutter screws / fasteners (box of 100)', 'box', 'gutterLF', 'coverage', 100, p(12, 14), 'ASSUMPTION: 1 box per 100 ft of gutter.'),
     mk('Gutter sealant (tube)', 'tube', 'gutterLF', 'coverage', 25, p(9, 10), 'ASSUMPTION: 1 tube per 25 ft of gutter.'),

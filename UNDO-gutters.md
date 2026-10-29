@@ -19,6 +19,18 @@ alter table public.estimates add constraint estimates_roof_type_check check (roo
 commit;
 ```
 
+## 2b. Gutter team-default price rows
+Saving team defaults is disabled for gutters in this branch, but if any `roof:gutter_*` rows were ever written (e.g. by an earlier preview build), delete them:
+```sql
+select id from public.price_catalog where id like 'roof:gutter_%';
+delete from public.price_catalog where id in ('roof:gutter_5in', 'roof:gutter_6in');
+```
+
+## Missing / none rule (gutters)
+Blank downspout feet, inside corners, outside corners or miters = MISSING (flagged, blocks approval). Ticking "None" or typing 0 = none.
+Gutter feet: blank uses the report eave length; missing or 0 is always flagged (a gutter estimate needs gutter footage — there is no "none").
+End caps: entered count wins; blank = ASSUMPTION 1 per 20 ft of gutter.
+
 ## 3. Warning: old code + saved gutter estimates
 Code without this branch does not know `gutter_5in` / `gutter_6in`. Its allow-list falls back to asphalt shingles, so a saved gutter estimate
 opened in old code shows **no gutter type label** (it shows "Asphalt shingles"), and the gutter inputs (gutter/downspout feet, corners, miters,

@@ -17,7 +17,9 @@ import {
   isGutterType,
   gutterSummary,
   GUTTER_FIELDS,
+  GUTTER_NONE,
   GUTTER_DB_PENDING_MSG,
+  GUTTER_DEFAULTS_DISABLED,
   type GutterInputKey,
   PLACEHOLDER_TAG,
   roofTypeOf,
@@ -359,6 +361,7 @@ export default function Estimate({ jobId }: { jobId: string }) {
 
   const saveDefaults = () =>
     run('Saving defaults failed', async () => {
+      if (isGutterType(roofTypeOf(data))) throw new Error(GUTTER_DEFAULTS_DISABLED);
       const rt = roofTypeOf(data);
       const label = ROOF_TYPES.find((t) => t.id === rt)?.label;
       if (!confirm(`Save these material and labor lines (names, prices, coverage) as the team default for NEW ${label} estimates?`)) return;
@@ -525,20 +528,23 @@ export default function Estimate({ jobId }: { jobId: string }) {
                     type="number"
                     inputMode="decimal"
                     min={0}
-                    placeholder={fld.key === 'gutterFeet' ? (m.eaves !== undefined ? `${m.eaves} (eaves)` : 'missing') : fld.key === 'downspoutFeet' ? 'missing' : '0'}
+                    placeholder={fld.key === 'gutterFeet' ? (m.eaves !== undefined ? `${m.eaves} (eaves)` : 'missing') : GUTTER_NONE.some((x) => x.key === fld.key) ? 'missing' : fld.key === 'endCaps' ? 'auto: 1 per 20 ft' : '0'}
                     value={m[fld.key] ?? ''}
-                    disabled={readOnly || (fld.key === 'downspoutFeet' && !!m.noDownspouts)}
+                    disabled={readOnly || GUTTER_NONE.some((x) => x.key === fld.key && !!m[x.flag])}
                     onChange={(e) => setG(fld.key, e.target.value, fld.label)}
                   />
                 </label>
               ))}
             </div>
-            <label className="row gap small">
-              <input type="checkbox" checked={!!m.noDownspouts} disabled={readOnly}
-                onChange={(e) => { const n = { ...m }; if (e.target.checked) n.noDownspouts = true; else delete n.noDownspouts; update({ measurements: n }); }} />
-              None — no downspouts on this job
-            </label>
-            <p className="placeholder small">ASSUMPTION: gutter feet default to the report eave length — type a number to override. Guard is only priced when guard feet are entered.</p>
+            {GUTTER_NONE.map((x) => (
+              <label key={x.flag} className="row gap small">
+                <input type="checkbox" checked={!!m[x.flag]} disabled={readOnly}
+                  onChange={(e) => { const n = { ...m }; if (e.target.checked) n[x.flag] = true; else delete n[x.flag]; update({ measurements: n }); }} />
+                {x.label}
+              </label>
+            ))}
+            <p className="muted small">Rule: a blank downspout / corner / miter box is MISSING and blocks approval; tick “None” (or type 0) when there are none. Gutter feet must be more than 0 (blank uses the report eave length).</p>
+            <p className="placeholder small">ASSUMPTION: gutter feet default to the report eave length — type a number to override. End caps: if blank, 1 per 20 ft of gutter (real count is 2 per run — enter it). Guard is only priced when guard feet are entered.</p>
             <p className="derived">
               Gutter <b>{Number.isNaN(g.gutterFeet) ? 'MISSING' : `${g.gutterFeet} ft (${g.gutterSections} × 10 ft)`}</b> · downspouts <b>{m.noDownspouts ? 'none' : Number.isNaN(g.downspoutFeet) ? 'MISSING' : `${g.downspoutFeet} ft (${g.downspoutPieces} × 10 ft)`}</b>
             </p>
@@ -599,7 +605,8 @@ export default function Estimate({ jobId }: { jobId: string }) {
       </div>
       {!readOnly && (
         <div className="pad-x">
-          <button className="btn ghost small" disabled={busy} onClick={saveDefaults}>Save these lines as team default prices</button>
+          <button className="btn ghost small" disabled={busy || isGutterType(roofTypeOf(data))} onClick={saveDefaults}>Save these lines as team default prices</button>
+          {isGutterType(roofTypeOf(data)) && <p className="muted small">{GUTTER_DEFAULTS_DISABLED}</p>}
         </div>
       )}
     </div>

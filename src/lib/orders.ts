@@ -41,12 +41,13 @@ function wrap(tpl: OrderTemplate, ctx: OrderContext, body: string[]): string {
 }
 
 const ft = (n: number, unit: string) => (Number.isNaN(n) ? 'MISSING' : `${fmtQty(n)} ${unit}`);
+const cnt = (none: boolean | undefined, v: number | undefined) => (none ? 'none' : v === undefined ? 'MISSING' : fmtQty(v));
 function gutterLines(m: Measurements): string[] {
   const g = gutterSummary(m);
   const out = [
     `- Gutter: ${ft(g.gutterFeet, 'ft')}${Number.isNaN(g.gutterSections) ? '' : ` (${g.gutterSections} × 10 ft sections)`}${m.gutterFeet === undefined && !Number.isNaN(g.gutterFeet) ? ' — from report eaves' : ''}`,
     `- Downspouts: ${m.noDownspouts ? 'none' : ft(g.downspoutFeet, 'ft')}${Number.isNaN(g.downspoutPieces) || m.noDownspouts ? '' : ` (${g.downspoutPieces} × 10 ft pieces)`}`,
-    `- Inside corners ${m.insideCorners ?? 0} · Outside corners ${m.outsideCorners ?? 0} · Miters ${m.miters ?? 0}`,
+    `- Inside corners ${cnt(m.noInsideCorners, m.insideCorners)} · Outside corners ${cnt(m.noOutsideCorners, m.outsideCorners)} · Miters ${cnt(m.noMiters, m.miters)} · End caps ${m.endCaps ?? `${Number.isNaN(g.gutterFeet) ? 'MISSING' : Math.ceil(g.gutterFeet / 20)} (ASSUMPTION 1 per 20 ft)`}`,
   ];
   if (m.chainFeet) out.push(`- Rain chain: ${fmtQty(m.chainFeet)} ft`);
   if (m.guardFeet) out.push(`- Gutter guard: ${fmtQty(m.guardFeet)} ft`);

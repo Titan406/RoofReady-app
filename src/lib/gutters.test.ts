@@ -11,7 +11,7 @@ const base: Measurements = {
   stepFlashing: 98, flashing: 55, valley: 41, dripEdge: 355,
 };
 // Real call: 271 ft gutters, 225 ft downspouts, 40 ft chain, two 3 ft miters, guard for 18 ft.
-const call: Measurements = { ...base, eaves: 200, gutterFeet: 271, downspoutFeet: 225, chainFeet: 40, miters: 2, guardFeet: 18 };
+const call: Measurements = { ...base, eaves: 200, gutterFeet: 271, downspoutFeet: 225, chainFeet: 40, miters: 2, guardFeet: 18, insideCorners: 0, outsideCorners: 0 };
 const find = (ls: Line[], frag: string) => ls.find((l) => l.name.includes(frag))!;
 
 describe('gutter types allow-list', () => {
@@ -97,10 +97,10 @@ describe('gutter flags & inputs', () => {
     expect(lineQty(ds, none)).toBe(0);
     const e = newEstimateData(base, '', undefined, 'gutter_5in');
     expect(computeTotals(e).missingCount).toBeGreaterThan(0);
-    expect(computeTotals(newEstimateData({ ...base, eaves: 100, noDownspouts: true }, '', undefined, 'gutter_5in')).missingCount).toBe(0);
+    expect(computeTotals(newEstimateData({ ...base, eaves: 100, noDownspouts: true, noInsideCorners: true, noOutsideCorners: true, noMiters: true }, '', undefined, 'gutter_5in')).missingCount).toBe(0);
   });
   it('guard is optional: no guard feet → 0, not flagged', () => {
-    const d = computeDrivers({ ...base, gutterFeet: 100, downspoutFeet: 20 });
+    const d = computeDrivers({ ...base, gutterFeet: 100, downspoutFeet: 20, insideCorners: 0, outsideCorners: 0, miters: 0 });
     const gl = find(defaultMaterialsFor('gutter_5in'), 'guard');
     expect(lineQty(gl, d)).toBe(0);
     expect(lineMissing(gl, d)).toBe(false);
@@ -141,4 +141,46 @@ describe('gutter orders', () => {
     const back = switchRoofType(switchRoofType(e, 'gutter_5in'), 'asphalt_shingle');
     expect(computeTotals(back).price).toBe(p0);
   });
+});
+
+import { GUTTER_DEFAULTS_DISABLED, END_CAP_FT } from './estimate';
+describe('QC (Frank) fixes', () => {
+  const ok: Measurements = { ...base, gutterFeet: 100, downspoutFeet: 20, insideCorners: 1, outsideCorners: 1, miters: 0 };
+  const m = defaultMaterialsFor('gutter_5in');
+  it('blank corners / miters are flagged missing (material + labor) and block approval', () => {
+    for (const k of ['insideCorners', 'outsideCorners', 'miters'] as const) {
+      const mm = { ...ok }; delete mm[k];
+      const t = computeTotals(newEstimateData(mm, '', undefined, 'gutter_5in'));
+      expect(t.missingCount).toBe(2);
+      expect(Number.isNaN(computeDrivers(mm)[k])).toBe(true);
+    }
+    expect(computeTotals(newEstimateData(ok, '', undefined, 'gutter_5in')).missingCount).toBe(0);
+  });
+  it('explicit none clears each flag; typed 0 also means none', () => {
+    const mm: Measurements = { ...base, gutterFeet: 100, noDownspouts: true, noInsideCorners: true, noOutsideCorners: true, noMiters: true };
+    expect(computeTotals(newEstimateData(mm, '', undefined, 'gutter_5in')).missingCount).toBe(0);
+    expect(computeDrivers({ ...ok, downspoutFeet: 0 }).downspoutLF).toBe(0);
+    expect(lineMissing(find(m, 'inside corner'), computeDrivers({ ...ok, insideCorners: 0 }))).toBe(false);
+    const n = normalizeMeasurements({ noInsideCorners: true, noOutsideCorners: true, noMiters: true, endCaps: '6' });
+    expect([n.noInsideCorners, n.noOutsideCorners, n.noMiters, n.endCaps]).toEqual([true, true, true, 6]);
+  });
+  it('gutter feet 0 is always missing (no none for gutters)', () => {
+    expect(lineMissing(find(m, 'K-style'), computeDrivers({ ...ok, gutterFeet: 0 }))).toBe(true);
+  });
+  it('orders show MISSING / none for counts', () => {
+    const mm = { ...ok, noMiters: true }; delete mm.insideCorners;
+    const wo = workOrderText(newEstimateData(mm, '', undefined, 'gutter_5in'), { address: 'x' }, false);
+    expect(wo).toContain('Inside corners MISSING');
+    expect(wo).toContain('Miters none');
+    expect(wo).toContain('price incomplete');
+  });
+  it('end caps: entered count wins; blank = 1 per 20 ft assumption', () => {
+    const l = find(m, 'end cap');
+    expect(END_CAP_FT).toBe(20);
+    expect(lineQty(l, computeDrivers(call))).toBe(14);
+    expect(lineQty(l, computeDrivers({ ...call, endCaps: 8 }))).toBe(8);
+    expect(l.assumption).toContain('1 per 20 ft');
+    expect(lineMissing(l, computeDrivers(base))).toBe(true);
+  });
+  it('team-defaults message exists for gutters', () => expect(GUTTER_DEFAULTS_DISABLED).toContain('database update'));
 });
